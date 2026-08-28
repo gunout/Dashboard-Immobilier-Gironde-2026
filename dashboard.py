@@ -1,11 +1,12 @@
-# dashboard_gironde_2026.py – version définitive avec rues (scatter_map)
+# dashboard_gironde_2026.py – version avec téléchargement depuis GitHub Release
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import os
+import requests
+import io
 from datetime import datetime
 
-# Détection de pyproj pour la conversion Lambert 93
+# Détection de pyproj (pour conversion Lambert 93)
 try:
     import pyproj
     HAS_PYPROJ = True
@@ -23,46 +24,44 @@ COMMUNES_GIRONDE = {
     "33243": "Libourne", "33522": "Arcachon", "33529": "La Teste-de-Buch", "33550": "Cestas",
 }
 
+# --- URL du fichier sur votre Release GitHub ---
+GITHUB_CSV_URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/releases/download/DVF-33/dvf_plus_d33.csv"
+
 @st.cache_data(ttl=3600)
 def load_gironde_2026_data():
-    """Charge le fichier dvf_plus_d33.csv depuis le sous-dossier 1_DONNEES_LIVRAISON"""
-    # Chemins possibles
-    possible_paths = [
-        os.path.join("1_DONNEES_LIVRAISON", "dvf_plus_d33.csv"),
-        "dvf_plus_d33.csv",
-        os.path.join("..", "1_DONNEES_LIVRAISON", "dvf_plus_d33.csv")
-    ]
-    file_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            file_path = path
-            break
-    if file_path is None:
-        st.error("Fichier dvf_plus_d33.csv introuvable. Vérifiez le chemin.")
-        return pd.DataFrame()
-
+    """Télécharge le fichier CSV depuis la release GitHub"""
     try:
-        with st.spinner(f"📂 Chargement du fichier {file_path}..."):
-            # Lecture des colonnes utiles
-            needed = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
-                      'type_local', 'code_commune', 'code_postal',
-                      'latitude', 'longitude', 'nombre_pieces_principales']
-            # On lit l'en-tête pour sélectionner les colonnes existantes
-            with open(file_path, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-                header = first_line.strip().split(',')
-            use_cols = [c for c in needed if c in header]
-            if not use_cols:
-                st.error("Aucune colonne requise trouvée dans le fichier.")
-                return pd.DataFrame()
-            df = pd.read_csv(file_path, sep=',', usecols=use_cols, low_memory=False)
-        if df.empty:
+        with st.spinner("📥 Téléchargement depuis GitHub Release..."):
+            response = requests.get(GITHUB_CSV_URL, stream=True, timeout=60)
+            response.raise_for_status()
+        
+        # Vérifier que le contenu est bien du CSV (et pas une page HTML)
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type:
+            st.error("Le lien GitHub renvoie une page HTML. Vérifiez que la release est publique et que le fichier est bien attaché.")
+            st.info("💡 Si la release est privée, vous pouvez la rendre publique dans les paramètres du dépôt.")
             return pd.DataFrame()
+
+        with st.spinner("🔄 Lecture du CSV..."):
+            # On lit directement le texte (le fichier est brut, pas compressé)
+            df = pd.read_csv(io.StringIO(response.text), sep=',', low_memory=False)
+        
+        if df.empty:
+            st.warning("Le fichier téléchargé est vide.")
+            return pd.DataFrame()
+        
         mem = round(df.memory_usage(deep=True).sum() / 1024**2, 1)
-        st.sidebar.success(f"✅ {len(df):,} transactions ({mem} Mo)")
+        st.sidebar.success(f"✅ {len(df):,} transactions chargées depuis GitHub ({mem} Mo)")
         return df
+
+    except requests.exceptions.HTTPError as e:
+        if response.status_code == 404:
+            st.error("❌ Fichier non trouvé (404). Vérifiez l'URL et que la release est publique.")
+        else:
+            st.error(f"Erreur HTTP : {e}")
+        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erreur de lecture : {e}")
+        st.error(f"Erreur de téléchargement : {e}")
         return pd.DataFrame()
 
 def prepare_data(df):
@@ -89,12 +88,14 @@ def prepare_data(df):
     return df_clean
 
 # --- Interface utilisateur ---
-st.title("🏘️ Dashboard Immobilier Gironde - 2026")
-st.markdown("Source : DVF+ (Cerema) – fichier local dvf_plus_d33.csv")
+st.title("🏘️ Dashboard Immobilier Gironde - 2026 (GitHub Release)")
+st.markdown(f"Source : [dvf_plus_d33.csv]({GITHUB_CSV_URL})")
 
 df_brut = load_gironde_2026_data()
 if df_brut.empty:
-    st.info("Fichier introuvable ou erreur. Vérifiez que le fichier est présent.")
+    st.info("Impossible de charger les données. Vérifiez que la release est publique et que le fichier est correct.")
+    if st.button("🔄 Réessayer"):
+        st.rerun()
     st.stop()
 
 df = prepare_data(df_brut)
@@ -286,4 +287,4 @@ for c in ['valeur_fonciere', 'prix_m2']:
 st.dataframe(display[available], hide_index=True, use_container_width=True)
 
 st.markdown("---")
-st.caption(f"Mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')} – DVF+ 2026 Gironde (33)")
+st.caption(f"Mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')} – DVF+ 2026 Gironde (33) – Fichier chargé depuis GitHub")
