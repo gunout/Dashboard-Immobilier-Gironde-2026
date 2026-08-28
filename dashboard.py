@@ -1,4 +1,4 @@
-# dashboard_gironde_2026.py – avec lecture robuste (engine='python', on_bad_lines='skip')
+# dashboard_gironde_2026.py – version robuste (gestion des colonnes manquantes)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -6,7 +6,7 @@ import requests
 import io
 from datetime import datetime
 
-# Détection de pyproj (conversion Lambert 93)
+# Détection de pyproj (pour conversion Lambert 93)
 try:
     import pyproj
     HAS_PYPROJ = True
@@ -34,7 +34,6 @@ def load_gironde_2026_data():
             response = requests.get(GITHUB_CSV_URL, stream=True, timeout=60)
             response.raise_for_status()
         
-        # Vérifier qu'on n'a pas une page HTML
         if 'text/html' in response.headers.get('content-type', ''):
             st.error("Le lien GitHub renvoie une page HTML. Vérifiez que la release est publique.")
             return pd.DataFrame()
@@ -44,22 +43,32 @@ def load_gironde_2026_data():
                 io.StringIO(response.text),
                 sep=',',
                 quotechar='"',
-                engine='python',          # tolérant
-                on_bad_lines='skip',      # ignore les lignes avec nombre de champs incorrect
-                # low_memory n'est pas utilisé avec engine='python'
+                engine='python',
+                on_bad_lines='skip',
             )
         
         if df.empty:
             st.warning("Le fichier est vide ou toutes les lignes ont été ignorées.")
             return pd.DataFrame()
         
-        # Ne garder que les colonnes utiles
+        # Liste des colonnes nécessaires
         needed = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
                   'type_local', 'code_commune', 'code_postal',
                   'latitude', 'longitude', 'nombre_pieces_principales']
         available_cols = [c for c in needed if c in df.columns]
-        if available_cols:
-            df = df[available_cols]
+        if not available_cols:
+            st.error("Aucune colonne requise trouvée dans le fichier.")
+            return pd.DataFrame()
+        
+        # On garde les colonnes disponibles
+        df = df[available_cols]
+        
+        # Vérifier que les colonnes essentielles sont présentes
+        essential = ['valeur_fonciere', 'surface_reelle_bati']
+        missing = [c for c in essential if c not in df.columns]
+        if missing:
+            st.error(f"Colonnes manquantes : {missing}. Le fichier n'est pas un DVF+ valide.")
+            return pd.DataFrame()
         
         mem = round(df.memory_usage(deep=True).sum() / 1024**2, 1)
         st.sidebar.success(f"✅ {len(df):,} transactions chargées ({mem} Mo)")
@@ -73,23 +82,42 @@ def prepare_data(df):
     if df.empty:
         return df
     df_clean = df.copy()
+    
+    # Conversion des dates (si présente)
     if 'date_mutation' in df_clean.columns:
         df_clean["date_mutation"] = pd.to_datetime(df_clean["date_mutation"], errors='coerce')
-    if 'valeur_fonciere' in df_clean.columns:
-        df_clean["valeur_fonciere"] = pd.to_numeric(df_clean["valeur_fonciere"], errors='coerce')
-    if 'surface_reelle_bati' in df_clean.columns:
-        df_clean["surface_reelle_bati"] = pd.to_numeric(df_clean["surface_reelle_bati"], errors='coerce')
+    
+    # Conversion numérique (si présentes)
+    for col in ['valeur_fonciere', 'surface_reelle_bati']:
+        if col in df_clean.columns:
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+    
+    # Filtre type_local (si présent)
     if 'type_local' in df_clean.columns:
         df_clean = df_clean[df_clean["type_local"].isin(['Maison', 'Appartement'])]
-    df_clean = df_clean.dropna(subset=['valeur_fonciere', 'surface_reelle_bati'])
-    df_clean = df_clean[(df_clean['valeur_fonciere'] > 20000) & (df_clean['valeur_fonciere'] < 3000000)]
-    df_clean = df_clean[(df_clean['surface_reelle_bati'] > 9) & (df_clean['surface_reelle_bati'] < 400)]
-    df_clean['prix_m2'] = df_clean['valeur_fonciere'] / df_clean['surface_reelle_bati']
-    df_clean = df_clean[(df_clean['prix_m2'] > 500) & (df_clean['prix_m2'] < 12000)]
+    
+    # Suppression des NA uniquement sur les colonnes existantes
+    subset_cols = [c for c in ['valeur_fonciere', 'surface_reelle_bati'] if c in df_clean.columns]
+    if subset_cols:
+        df_clean = df_clean.dropna(subset=subset_cols)
+    
+    # Filtres de cohérence
+    if 'valeur_fonciere' in df_clean.columns:
+        df_clean = df_clean[(df_clean['valeur_fonciere'] > 20000) & (df_clean['valeur_fonciere'] < 3000000)]
+    if 'surface_reelle_bati' in df_clean.columns:
+        df_clean = df_clean[(df_clean['surface_reelle_bati'] > 9) & (df_clean['surface_reelle_bati'] < 400)]
+    
+    # Calcul du prix m²
+    if 'valeur_fonciere' in df_clean.columns and 'surface_reelle_bati' in df_clean.columns:
+        df_clean['prix_m2'] = df_clean['valeur_fonciere'] / df_clean['surface_reelle_bati']
+        df_clean = df_clean[(df_clean['prix_m2'] > 500) & (df_clean['prix_m2'] < 12000)]
+    
+    # Ajout du nom de commune
     if 'code_commune' in df_clean.columns:
         df_clean['code_commune'] = df_clean['code_commune'].astype(str).str.zfill(5)
         df_clean['nom_commune'] = df_clean['code_commune'].map(COMMUNES_GIRONDE)
         df_clean = df_clean.dropna(subset=['nom_commune'])
+    
     return df_clean
 
 # --- Interface ---
