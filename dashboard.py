@@ -1,4 +1,4 @@
-# dashboard_gironde_2026.py – version robuste avec on_bad_lines='skip'
+# dashboard_gironde_2026.py – avec lecture robuste (engine='python', on_bad_lines='skip')
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -6,7 +6,7 @@ import requests
 import io
 from datetime import datetime
 
-# Détection de pyproj (pour conversion Lambert 93)
+# Détection de pyproj (conversion Lambert 93)
 try:
     import pyproj
     HAS_PYPROJ = True
@@ -28,14 +28,14 @@ GITHUB_CSV_URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/re
 
 @st.cache_data(ttl=3600)
 def load_gironde_2026_data():
-    """Télécharge le CSV avec gestion des lignes mal formées."""
+    """Télécharge et lit le CSV en tolérant les lignes mal formées."""
     try:
         with st.spinner("📥 Téléchargement depuis GitHub Release..."):
             response = requests.get(GITHUB_CSV_URL, stream=True, timeout=60)
             response.raise_for_status()
         
-        content_type = response.headers.get('content-type', '')
-        if 'text/html' in content_type:
+        # Vérifier qu'on n'a pas une page HTML
+        if 'text/html' in response.headers.get('content-type', ''):
             st.error("Le lien GitHub renvoie une page HTML. Vérifiez que la release est publique.")
             return pd.DataFrame()
 
@@ -44,16 +44,16 @@ def load_gironde_2026_data():
                 io.StringIO(response.text),
                 sep=',',
                 quotechar='"',
-                engine='python',
-                on_bad_lines='skip',   # Ignore les lignes avec un mauvais format
-                low_memory=False
+                engine='python',          # tolérant
+                on_bad_lines='skip',      # ignore les lignes avec nombre de champs incorrect
+                # low_memory n'est pas utilisé avec engine='python'
             )
         
         if df.empty:
             st.warning("Le fichier est vide ou toutes les lignes ont été ignorées.")
             return pd.DataFrame()
         
-        # Réduire la mémoire en ne gardant que les colonnes utiles
+        # Ne garder que les colonnes utiles
         needed = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
                   'type_local', 'code_commune', 'code_postal',
                   'latitude', 'longitude', 'nombre_pieces_principales']
@@ -93,7 +93,7 @@ def prepare_data(df):
     return df_clean
 
 # --- Interface ---
-st.title("🏘️ Dashboard Immobilier Gironde - 2026 (GitHub)")
+st.title("🏘️ Dashboard Immobilier Gironde - 2026 (GitHub Release)")
 st.markdown(f"Source : [dvf_plus_d33.csv]({GITHUB_CSV_URL})")
 
 df_brut = load_gironde_2026_data()
@@ -192,7 +192,7 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
                     except Exception as e:
                         st.error(f"Erreur de conversion : {e}")
                 else:
-                    st.error("❌ pyproj non installé.")
+                    st.error("❌ pyproj non installé. Ajoutez 'pyproj' dans requirements.txt.")
 
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
