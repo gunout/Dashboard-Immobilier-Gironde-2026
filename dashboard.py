@@ -1,4 +1,4 @@
-# dashboard_gironde_2026.py – version robuste (gestion des colonnes manquantes)
+# dashboard_gironde_2026.py – adapté pour DVF+ (séparateur |, colonnes spécifiques)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -6,7 +6,7 @@ import requests
 import io
 from datetime import datetime
 
-# Détection de pyproj (pour conversion Lambert 93)
+# pyproj pour conversion Lambert 93 → WGS84
 try:
     import pyproj
     HAS_PYPROJ = True
@@ -28,7 +28,7 @@ GITHUB_CSV_URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/re
 
 @st.cache_data(ttl=3600)
 def load_gironde_2026_data():
-    """Télécharge et lit le CSV en tolérant les lignes mal formées."""
+    """Télécharge et lit le fichier DVF+ (séparateur |) depuis GitHub Release."""
     try:
         with st.spinner("📥 Téléchargement depuis GitHub Release..."):
             response = requests.get(GITHUB_CSV_URL, stream=True, timeout=60)
@@ -38,44 +38,76 @@ def load_gironde_2026_data():
             st.error("Le lien GitHub renvoie une page HTML. Vérifiez que la release est publique.")
             return pd.DataFrame()
 
-        with st.spinner("🔄 Lecture du CSV (mode tolérant)..."):
+        with st.spinner("🔄 Lecture du CSV (séparateur |)..."):
             df = pd.read_csv(
                 io.StringIO(response.text),
-                sep=',',
+                sep='|',                     # <-- séparateur pipe
                 quotechar='"',
                 engine='python',
                 on_bad_lines='skip',
+                low_memory=False
             )
         
         if df.empty:
             st.warning("Le fichier est vide ou toutes les lignes ont été ignorées.")
             return pd.DataFrame()
         
-        # Liste des colonnes nécessaires
-        needed = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
-                  'type_local', 'code_commune', 'code_postal',
-                  'latitude', 'longitude', 'nombre_pieces_principales']
-        available_cols = [c for c in needed if c in df.columns]
-        if not available_cols:
-            st.error("Aucune colonne requise trouvée dans le fichier.")
-            return pd.DataFrame()
-        
-        # On garde les colonnes disponibles
-        df = df[available_cols]
+        # Renommer les colonnes pour qu'elles correspondent aux noms attendus
+        rename_map = {
+            'datemut': 'date_mutation',
+            'valeurfonc': 'valeur_fonciere',
+            'sbati': 'surface_reelle_bati',
+            'libtypbien': 'type_local',
+            'l_codinsee': 'code_commune',
+            'geompar_x': 'longitude_lambert',  # on garde pour conversion
+            'geompar_y': 'latitude_lambert'
+        }
+        # Seules les colonnes existantes sont renommées
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
         
         # Vérifier que les colonnes essentielles sont présentes
-        essential = ['valeur_fonciere', 'surface_reelle_bati']
-        missing = [c for c in essential if c not in df.columns]
+        required = ['valeur_fonciere', 'surface_reelle_bati']
+        missing = [c for c in required if c not in df.columns]
         if missing:
-            st.error(f"Colonnes manquantes : {missing}. Le fichier n'est pas un DVF+ valide.")
+            st.error(f"Colonnes obligatoires manquantes : {missing}")
             return pd.DataFrame()
+        
+        # Si les coordonnées Lambert sont présentes, on les convertit en WGS84
+        if 'longitude_lambert' in df.columns and 'latitude_lambert' in df.columns and HAS_PYPROJ:
+            try:
+                lambert93 = pyproj.Proj('+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs')
+                wgs84 = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+                lon_vals = df['longitude_lambert'].values
+                lat_vals = df['latitude_lambert'].values
+                new_lon, new_lat = pyproj.transform(lambert93, wgs84, lon_vals, lat_vals)
+                df['longitude'] = new_lon
+                df['latitude'] = new_lat
+                # On peut supprimer les colonnes Lambert pour économiser la mémoire
+                df = df.drop(columns=['longitude_lambert', 'latitude_lambert'], errors='ignore')
+            except Exception as e:
+                st.warning(f"Conversion Lambert → WGS84 échouée : {e}. Les coordonnées resteront en Lambert.")
+                # On garde les colonnes Lambert telles quelles (mais elles ne seront pas utilisées)
+        elif 'longitude_lambert' in df.columns and 'latitude_lambert' in df.columns and not HAS_PYPROJ:
+            st.warning("pyproj non installé. Les coordonnées Lambert ne seront pas converties.")
+            # On peut tout de même utiliser les coordonnées brutes, mais elles seront en mètres (affichage décalé)
+            df['longitude'] = df['longitude_lambert']
+            df['latitude'] = df['latitude_lambert']
+            df = df.drop(columns=['longitude_lambert', 'latitude_lambert'], errors='ignore')
+        
+        # Réduire aux colonnes utiles
+        kept_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
+                     'type_local', 'code_commune', 'code_postal', 'latitude', 'longitude',
+                     'nombre_pieces_principales']  # cette dernière n'existe peut-être pas
+        available_cols = [c for c in kept_cols if c in df.columns]
+        if available_cols:
+            df = df[available_cols]
         
         mem = round(df.memory_usage(deep=True).sum() / 1024**2, 1)
         st.sidebar.success(f"✅ {len(df):,} transactions chargées ({mem} Mo)")
         return df
 
     except Exception as e:
-        st.error(f"Erreur de téléchargement : {e}")
+        st.error(f"Erreur de chargement : {e}")
         return pd.DataFrame()
 
 def prepare_data(df):
@@ -83,20 +115,20 @@ def prepare_data(df):
         return df
     df_clean = df.copy()
     
-    # Conversion des dates (si présente)
+    # Dates
     if 'date_mutation' in df_clean.columns:
         df_clean["date_mutation"] = pd.to_datetime(df_clean["date_mutation"], errors='coerce')
     
-    # Conversion numérique (si présentes)
+    # Numériques
     for col in ['valeur_fonciere', 'surface_reelle_bati']:
         if col in df_clean.columns:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
     
-    # Filtre type_local (si présent)
+    # Type local
     if 'type_local' in df_clean.columns:
         df_clean = df_clean[df_clean["type_local"].isin(['Maison', 'Appartement'])]
     
-    # Suppression des NA uniquement sur les colonnes existantes
+    # Supprimer les NA sur les colonnes essentielles
     subset_cols = [c for c in ['valeur_fonciere', 'surface_reelle_bati'] if c in df_clean.columns]
     if subset_cols:
         df_clean = df_clean.dropna(subset=subset_cols)
@@ -107,12 +139,12 @@ def prepare_data(df):
     if 'surface_reelle_bati' in df_clean.columns:
         df_clean = df_clean[(df_clean['surface_reelle_bati'] > 9) & (df_clean['surface_reelle_bati'] < 400)]
     
-    # Calcul du prix m²
+    # Prix m²
     if 'valeur_fonciere' in df_clean.columns and 'surface_reelle_bati' in df_clean.columns:
         df_clean['prix_m2'] = df_clean['valeur_fonciere'] / df_clean['surface_reelle_bati']
         df_clean = df_clean[(df_clean['prix_m2'] > 500) & (df_clean['prix_m2'] < 12000)]
     
-    # Ajout du nom de commune
+    # Code commune → nom
     if 'code_commune' in df_clean.columns:
         df_clean['code_commune'] = df_clean['code_commune'].astype(str).str.zfill(5)
         df_clean['nom_commune'] = df_clean['code_commune'].map(COMMUNES_GIRONDE)
@@ -121,12 +153,12 @@ def prepare_data(df):
     return df_clean
 
 # --- Interface ---
-st.title("🏘️ Dashboard Immobilier Gironde - 2026 (GitHub Release)")
+st.title("🏘️ Dashboard Immobilier Gironde - 2026 (DVF+ format pipe)")
 st.markdown(f"Source : [dvf_plus_d33.csv]({GITHUB_CSV_URL})")
 
 df_brut = load_gironde_2026_data()
 if df_brut.empty:
-    st.info("Impossible de charger les données. Vérifiez la release GitHub.")
+    st.info("Impossible de charger les données. Vérifiez le lien.")
     if st.button("🔄 Réessayer"):
         st.rerun()
     st.stop()
@@ -196,31 +228,21 @@ st.subheader(f"🗺️ Carte des transactions - {selected} (2026)")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     df_carte = df_filtre.copy()
+    # Conversion en numérique (au cas où)
     df_carte['latitude'] = pd.to_numeric(df_carte['latitude'].astype(str).str.replace(',', '.'), errors='coerce')
     df_carte['longitude'] = pd.to_numeric(df_carte['longitude'].astype(str).str.replace(',', '.'), errors='coerce')
     df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
 
     if not df_carte.empty:
+        # Affichage diagnostic
         lat_min, lat_max = df_carte['latitude'].min(), df_carte['latitude'].max()
         lon_min, lon_max = df_carte['longitude'].min(), df_carte['longitude'].max()
-
         with st.expander("🔍 Diagnostic des coordonnées", expanded=False):
             st.write(f"Latitude : min {lat_min:.4f}, max {lat_max:.4f}")
             st.write(f"Longitude : min {lon_min:.4f}, max {lon_max:.4f}")
+            # Vérifier si les coordonnées sont en degrés (sinon on affiche un avertissement)
             if lat_max > 90 or lat_min < -90 or lon_max > 180 or lon_min < -180:
-                st.warning("⚠️ Coordonnées en mètres (Lambert 93). Conversion automatique vers WGS84.")
-                if HAS_PYPROJ:
-                    try:
-                        lambert93 = pyproj.Proj('+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs')
-                        wgs84 = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
-                        new_lon, new_lat = pyproj.transform(lambert93, wgs84, df_carte['longitude'].values, df_carte['latitude'].values)
-                        df_carte['longitude'] = new_lon
-                        df_carte['latitude'] = new_lat
-                        st.success("✅ Conversion effectuée.")
-                    except Exception as e:
-                        st.error(f"Erreur de conversion : {e}")
-                else:
-                    st.error("❌ pyproj non installé. Ajoutez 'pyproj' dans requirements.txt.")
+                st.warning("⚠️ Les coordonnées semblent encore en mètres. La conversion n'a pas été appliquée.")
 
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
@@ -311,4 +333,4 @@ for c in ['valeur_fonciere', 'prix_m2']:
 st.dataframe(display[available], hide_index=True, use_container_width=True)
 
 st.markdown("---")
-st.caption(f"Mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')} – DVF+ 2026 Gironde (33) – GitHub Release")
+st.caption(f"Mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')} – DVF+ 2026 Gironde (33) – séparateur | – GitHub Release")
