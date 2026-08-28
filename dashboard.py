@@ -1,4 +1,4 @@
-# dashboard_gironde_2026.py – version définitive avec mapping exact
+# dashboard_gironde_2026.py – version ultra-robuste avec diagnostic explicite
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -6,7 +6,6 @@ import requests
 import io
 from datetime import datetime
 
-# pyproj pour conversion Lambert 93 → WGS84
 try:
     import pyproj
     HAS_PYPROJ = True
@@ -32,25 +31,32 @@ def load_gironde_2026_data():
             response = requests.get(GITHUB_CSV_URL, stream=True, timeout=60)
             response.raise_for_status()
         
+        # Vérifier qu'on n'a pas une page HTML
         if 'text/html' in response.headers.get('content-type', ''):
-            st.error("Le lien renvoie une page HTML. Vérifiez que la release est publique.")
-            return pd.DataFrame()
+            st.error("❌ Le lien renvoie une page HTML. Vérifiez que la release est publique.")
+            return None, "HTML"
 
         with st.spinner("🔄 Lecture du CSV (séparateur |)..."):
+            # Lecture en mode texte
             df = pd.read_csv(
                 io.StringIO(response.text),
                 sep='|',
                 quotechar='"',
                 engine='python',
                 on_bad_lines='skip',
-                dtype=str  # tout en string pour éviter les erreurs de conversion
+                dtype=str
             )
         
         if df.empty:
             st.warning("Le fichier est vide.")
-            return pd.DataFrame()
+            return None, "empty"
 
-        # --- RENOMMAGE EXACT ---
+        # --- DIAGNOSTIC : afficher les colonnes dans la barre latérale ---
+        original_cols = list(df.columns)
+        st.sidebar.write("**Colonnes originales :**", original_cols)
+        st.sidebar.write(f"**Nombre de lignes :** {len(df):,}")
+
+        # --- RENOMMAGE EXPLICITE ---
         rename_dict = {
             'datemut': 'date_mutation',
             'valeurfonc': 'valeur_fonciere',
@@ -59,26 +65,44 @@ def load_gironde_2026_data():
             'l_codinsee': 'code_commune',
             'geompar_x': 'longitude_lambert',
             'geompar_y': 'latitude_lambert',
-            'l_codepost': 'code_postal',       # si présente
-            'nbpieceprin': 'nombre_pieces_principales'  # si présente
+            'l_codepost': 'code_postal',
+            'nbpieceprin': 'nombre_pieces_principales'
         }
-        # Ne renommer que les colonnes qui existent
+        # Appliquer le renommage uniquement pour les colonnes présentes
         for old, new in rename_dict.items():
             if old in df.columns:
                 df = df.rename(columns={old: new})
-        
-        # Vérification des colonnes essentielles
+
+        # Vérifier les colonnes essentielles après renommage
         required = ['valeur_fonciere', 'surface_reelle_bati']
         missing = [col for col in required if col not in df.columns]
+
         if missing:
-            st.error(f"Colonnes essentielles manquantes : {missing}. Colonnes disponibles : {list(df.columns)}")
-            return pd.DataFrame()
+            st.error(f"❌ Colonnes manquantes après renommage : {missing}")
+            st.error(f"Colonnes disponibles : {list(df.columns)}")
+            st.info("💡 Vérifiez le mapping dans le code. Les colonnes originales doivent correspondre.")
+            # On essaie de continuer avec les noms originaux si possible
+            # On renomme avec les noms originaux pour les colonnes manquantes
+            fallback_map = {
+                'valeurfonc': 'valeur_fonciere',
+                'sbati': 'surface_reelle_bati'
+            }
+            for old, new in fallback_map.items():
+                if old in df.columns and new not in df.columns:
+                    df = df.rename(columns={old: new})
+            # Vérifier à nouveau
+            missing2 = [col for col in required if col not in df.columns]
+            if missing2:
+                st.error(f"❌ Échec du fallback. Colonnes toujours manquantes : {missing2}")
+                st.stop()
+            else:
+                st.success("✅ Fallback réussi : les colonnes ont été renommées avec les noms originaux.")
 
         # Conversion numérique
         df['valeur_fonciere'] = pd.to_numeric(df['valeur_fonciere'], errors='coerce')
         df['surface_reelle_bati'] = pd.to_numeric(df['surface_reelle_bati'], errors='coerce')
 
-        # Conversion des coordonnées Lambert → WGS84
+        # Coordonnées Lambert -> WGS84
         if 'longitude_lambert' in df.columns and 'latitude_lambert' in df.columns and HAS_PYPROJ:
             try:
                 lambert93 = pyproj.Proj('+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs')
@@ -92,14 +116,14 @@ def load_gironde_2026_data():
                     df.loc[mask, 'latitude'] = new_lat
                 df = df.drop(columns=['longitude_lambert', 'latitude_lambert'], errors='ignore')
             except Exception as e:
-                st.warning(f"Conversion Lambert échouée : {e}. Les coordonnées brutes seront utilisées.")
+                st.warning(f"⚠️ Conversion Lambert échouée : {e}")
                 df['longitude'] = pd.to_numeric(df['longitude_lambert'], errors='coerce')
                 df['latitude'] = pd.to_numeric(df['latitude_lambert'], errors='coerce')
         elif 'longitude_lambert' in df.columns and 'latitude_lambert' in df.columns:
             df['longitude'] = pd.to_numeric(df['longitude_lambert'], errors='coerce')
             df['latitude'] = pd.to_numeric(df['latitude_lambert'], errors='coerce')
 
-        # Garder uniquement les colonnes utiles
+        # Garder les colonnes utiles
         keep_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
                      'type_local', 'code_commune', 'code_postal', 'latitude', 'longitude',
                      'nombre_pieces_principales']
@@ -109,11 +133,11 @@ def load_gironde_2026_data():
 
         mem = round(df.memory_usage(deep=True).sum() / 1024**2, 1)
         st.sidebar.success(f"✅ {len(df):,} transactions ({mem} Mo)")
-        return df
+        return df, "success"
 
     except Exception as e:
         st.error(f"Erreur de chargement : {e}")
-        return pd.DataFrame()
+        return None, "error"
 
 def prepare_data(df):
     if df.empty:
@@ -124,7 +148,7 @@ def prepare_data(df):
     if 'date_mutation' in df_clean.columns:
         df_clean["date_mutation"] = pd.to_datetime(df_clean["date_mutation"], errors='coerce')
     
-    # Numeriques – déjà convertis, mais on s'assure
+    # Numeriques
     for col in ['valeur_fonciere', 'surface_reelle_bati']:
         if col in df_clean.columns:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
@@ -133,15 +157,15 @@ def prepare_data(df):
     if 'type_local' in df_clean.columns:
         df_clean = df_clean[df_clean["type_local"].isin(['Maison', 'Appartement'])]
     
-    # Supprimer les NA sur les colonnes essentielles
+    # Supprimer les NA
     subset_cols = [c for c in ['valeur_fonciere', 'surface_reelle_bati'] if c in df_clean.columns]
     if subset_cols:
         df_clean = df_clean.dropna(subset=subset_cols)
     else:
-        st.error("Colonnes essentielles manquantes.")
+        st.error("Colonnes essentielles manquantes pour le nettoyage.")
         return pd.DataFrame()
     
-    # Filtres de cohérence
+    # Filtres
     if 'valeur_fonciere' in df_clean.columns:
         df_clean = df_clean[(df_clean['valeur_fonciere'] > 20000) & (df_clean['valeur_fonciere'] < 3000000)]
     if 'surface_reelle_bati' in df_clean.columns:
@@ -164,9 +188,12 @@ def prepare_data(df):
 st.title("🏘️ Dashboard Immobilier Gironde - 2026 (DVF+ format pipe)")
 st.markdown(f"Source : [dvf_plus_d33.csv]({GITHUB_CSV_URL})")
 
-df_brut = load_gironde_2026_data()
-if df_brut.empty:
-    st.info("Impossible de charger les données. Vérifiez le lien et les colonnes.")
+df_brut, status = load_gironde_2026_data()
+if df_brut is None or df_brut.empty:
+    if status == "HTML":
+        st.info("📄 La réponse du serveur est une page HTML. Assurez-vous que votre release GitHub est publique.")
+    else:
+        st.info("Impossible de charger les données. Vérifiez le lien et les colonnes affichées dans la barre latérale.")
     if st.button("🔄 Réessayer"):
         st.rerun()
     st.stop()
@@ -176,14 +203,14 @@ if df.empty:
     st.warning("Aucune transaction valide après nettoyage.")
     st.stop()
 
-# --- Sélection commune ---
+# --- Le reste du dashboard est inchangé ---
 communes = sorted(df['nom_commune'].unique())
 selected = st.sidebar.selectbox("Commune", communes, index=communes.index("Bordeaux") if "Bordeaux" in communes else 0)
 df_commune = df[df['nom_commune'] == selected].copy()
 if df_commune.empty:
     st.stop()
 
-# --- Filtres ---
+# Filtres
 st.sidebar.header("🔧 Filtres")
 if 'code_postal' in df_commune.columns and not df_commune['code_postal'].isna().all():
     cp_options = sorted(df_commune['code_postal'].astype(str).unique())
@@ -209,7 +236,7 @@ if df_filtre.empty:
     st.warning("Aucun résultat.")
     st.stop()
 
-# --- KPIs ---
+# KPIs
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Prix moyen / m²", f"{df_filtre['prix_m2'].mean():,.0f} €")
 c2.metric("Prix médian", f"{df_filtre['valeur_fonciere'].median():,.0f} €")
@@ -218,7 +245,7 @@ c4.metric("Surface moyenne", f"{df_filtre['surface_reelle_bati'].mean():.0f} m²
 if 'nombre_pieces_principales' in df_filtre.columns:
     c5.metric("Pièces", f"{df_filtre['nombre_pieces_principales'].mean():.1f}")
 
-# --- Graphiques ---
+# Graphiques
 col1, col2 = st.columns(2)
 with col1:
     fig = px.histogram(df_filtre, x='prix_m2', nbins=40,
@@ -231,26 +258,17 @@ with col2:
                      hover_data=['code_postal'])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte ---
+# Carte
 st.subheader(f"🗺️ Carte des transactions - {selected} (2026)")
-
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     df_carte = df_filtre.copy()
     df_carte['latitude'] = pd.to_numeric(df_carte['latitude'], errors='coerce')
     df_carte['longitude'] = pd.to_numeric(df_carte['longitude'], errors='coerce')
     df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
-
     if not df_carte.empty:
-        lat_min, lat_max = df_carte['latitude'].min(), df_carte['latitude'].max()
-        lon_min, lon_max = df_carte['longitude'].min(), df_carte['longitude'].max()
-        with st.expander("🔍 Diagnostic des coordonnées", expanded=False):
-            st.write(f"Latitude : min {lat_min:.4f}, max {lat_max:.4f}")
-            st.write(f"Longitude : min {lon_min:.4f}, max {lon_max:.4f}")
-
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon)")
-
         try:
             fig = px.scatter_map(
                 df_carte,
@@ -300,7 +318,7 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
 else:
     st.info("📍 Colonnes latitude/longitude non disponibles.")
 
-# --- Évolution temporelle ---
+# Évolution temporelle
 if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
     df_filtre['mois'] = df_filtre['date_mutation'].dt.to_period('M')
     df_mensuel = df_filtre.groupby('mois').agg({
@@ -318,7 +336,7 @@ if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
         fig = px.bar(df_mensuel, x='mois', y='nb_transactions')
         st.plotly_chart(fig, use_container_width=True)
 
-# --- Top ventes ---
+# Top ventes
 st.subheader("💰 Top 5 des ventes")
 top = df_filtre.nlargest(5, 'valeur_fonciere')[['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']]
 if not top.empty:
