@@ -28,7 +28,7 @@ COMMUNES_GIRONDE = {
 @st.cache_data(ttl=3600)
 def load_gironde_2025_data():
     """Télécharge et charge uniquement les colonnes nécessaires depuis data.gouv.fr"""
-    url = ""
+    url = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/releases/download/DVF-33/dvf_plus_d33.csv"
     try:
         with st.spinner("📥 Téléchargement 2026..."):
             response = requests.get(url, stream=True, timeout=60)
