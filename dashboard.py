@@ -1,210 +1,255 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests
-import io
+import os
 from datetime import datetime
 
-try:
-    import pyproj
-    HAS_PYPROJ = True
-except ImportError:
-    HAS_PYPROJ = False
+st.set_page_config(
+    page_title="Dashboard Immobilier Gironde 2026",
+    page_icon="🏘️",
+    layout="wide"
+)
 
-st.set_page_config(page_title="Dashboard Gironde 2026", page_icon="🏘️", layout="wide")
-
-COMMUNES = {
-    "33063": "Bordeaux", "33069": "Bruges", "33075": "Cenon",
-    "33119": "Eysines", "33192": "Gradignan", "33200": "Gujan-Mestras",
-    "33249": "Lormont", "33273": "Merignac", "33281": "Pessac",
-    "33312": "Saint-Medard-en-Jalles", "33318": "Talence",
-    "33434": "Le Bouscat", "33449": "Villenave-d'Ornon",
-    "33039": "Begles", "33056": "Blanquefort", "33162": "Floirac",
-    "33243": "Libourne", "33522": "Arcachon",
-    "33529": "La Teste-de-Buch", "33550": "Cestas",
+# Dictionnaire des communes (INSEE -> nom)
+COMMUNES_GIRONDE = {
+    "33063": "Bordeaux",
+    "33039": "Bègles",
+    "33064": "Le Bouscat",
+    "33075": "Cenon",
+    "33069": "Bruges",
+    "33119": "Eysines",
+    "33192": "Gradignan",
+    "33200": "Gujan-Mestras",
+    "33249": "Lormont",
+    "33273": "Mérignac",
+    "33281": "Pessac",
+    "33312": "Saint-Médard-en-Jalles",
+    "33318": "Talence",
+    "33449": "Villenave-d'Ornon",
+    "33056": "Blanquefort",
+    "33162": "Floirac",
+    "33243": "Libourne",
+    "33522": "Arcachon",
+    "33529": "La Teste-de-Buch",
+    "33550": "Cestas",
+    "33001": "Aiguillon",
+    "33002": "Ambès",
+    "33009": "Arès",
+    "33016": "Audenge",
+    "33023": "Barsac",
+    "33028": "Bégadan",
+    "33034": "Biganos",
+    "33040": "Bouliac",
+    "33059": "Carbon-Blanc",
+    "33091": "Martillac",
+    "33097": "Pauillac",
+    "33103": "Saint-Émilion",
+    "33106": "Saint-Loubès",
+    "33128": "Yvrac",
+    "33003": "Arbanats",
+    "33004": "Arcins",
+    "33007": "Bassanne",
+    "33011": "Artigues-près-Bordeaux",
+    "33013": "Asques",
+    "33018": "Auros",
+    "33022": "Barie",
+    "33031": "Béguey",
+    "33032": "Beychac-et-Caillau",
+    "33033": "Bieujac",
+    "33036": "Blésignac",
+    "33037": "Bommes",
+    "33042": "Bourdelles",
+    "33043": "Branne",
+    "33044": "Brannens",
+    "33045": "Braud-et-Saint-Louis",
+    "33048": "Budos",
+    "33052": "Cadarsac",
+    "33053": "Cadillac",
+    "33054": "Cadaujac",
+    "33057": "Canéjan",
+    "33058": "Capian",
+    "33060": "Cardan",
+    "33061": "Carignan-de-Bordeaux",
+    "33065": "Castelnau-de-Médoc",
+    "33066": "Castelviel",
+    "33068": "Caudrot",
+    "33070": "Cazats",
+    "33071": "Cazaugitat",
+    "33072": "Cérons",
+    "33073": "Cestas",
+    "33074": "Chadenac",
+    "33076": "Chamadelle",
+    "33081": "Les Billaux",
+    "33083": "Lignan-de-Bordeaux",
+    "33084": "Loupes",
+    "33085": "Ludon-Médoc",
+    "33086": "Lussac",
+    "33087": "Macau",
+    "33088": "Madirac",
+    "33090": "Marmande",
+    "33094": "Naujac-sur-Mer",
+    "33095": "Neuillac",
+    "33096": "Noaillac",
+    "33099": "Peyrat-de-Bellegarde",
+    "33100": "Pujols-sur-Ciron",
+    "33101": "Queyrac",
+    "33102": "Rions",
+    "33104": "Saint-Genès-de-Lombaud",
+    "33105": "Saint-Laurent-Médoc",
+    "33108": "Saint-Pierre-de-Mons",
+    "33109": "Saint-Quentin-de-Baron",
+    "33110": "Saint-Selve",
+    "33111": "Saint-Vincent-de-Paul",
+    "33112": "Sallebœuf",
+    "33113": "Saumos",
+    "33114": "Savignac-de-l'Isle",
+    "33115": "Tabanac",
+    "33117": "Targon",
+    "33120": "Teuillac",
+    "33121": "Tizac-de-Lapouyade",
+    "33122": "Torcy",
+    "33123": "Le Tourne",
+    "33124": "Le Tuzan",
+    "33127": "Villeneuve-lès-Bordeaux",
 }
+NOMS_COMMUNES = {v: k for k, v in COMMUNES_GIRONDE.items()}
 
-URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/releases/download/DVF-33/dvf_plus_d33.csv"
-
-
-@st.cache_data(ttl=3600)
-def load():
+@st.cache_data
+def load_all_data():
+    file_path = "dvf_plus_d33.csv"  # Utilisation du fichier DVF 2026 pour la Gironde
+    if not os.path.exists(file_path):
+        st.error(f"Fichier {file_path} introuvable.")
+        return pd.DataFrame()
     try:
-        r = requests.get(URL, timeout=60)
-        r.raise_for_status()
-        if "html" in r.headers.get("content-type", ""):
-            return None
-        df = pd.read_csv(io.StringIO(r.text), sep="|", dtype=str,
-                         engine="python", on_bad_lines="skip")
-        return None if df.empty else df
-    except Exception as e:
-        st.error(f"Erreur chargement: {e}")
-        return None
-
-
-def clean(df):
-    if df is None:
-        return None
-    d = df.copy()
-
-    for old, new in [("datemut", "date"), ("valeurfonc", "prix"),
-                     ("sbati", "surf"), ("libtypbien", "type_brut"),
-                     ("l_codinsee", "cinsee"), ("geompar_x", "xl"),
-                     ("geompar_y", "yl")]:
-        if old in d.columns:
-            d.rename(columns={old: new}, inplace=True)
-
-    if "prix" not in d.columns or "surf" not in d.columns:
-        st.error(f"Colonnes manquantes: {list(d.columns)[:10]}")
-        return None
-
-    d["prix"] = pd.to_numeric(d["prix"], errors="coerce")
-    d["surf"] = pd.to_numeric(d["surf"], errors="coerce")
-    if "date" in d.columns:
-        d["date"] = pd.to_datetime(d["date"], errors="coerce")
-
-    # FILTRE CORRECT : "UNE MAISON" contient "MAISON"
-    if "type_brut" in d.columns:
-        mask = d["type_brut"].str.contains("MAISON|APPARTEMENT", case=False, na=False)
-        d = d[mask].copy()
-        d["type"] = d["type_brut"].str.extract(r"(MAISON|APPARTEMENT)", expand=False)
-        d["type"] = d["type"].str.title()
-
-    d = d.dropna(subset=["prix", "surf"])
-    d = d[d["prix"].between(20000, 5000000)]
-    d = d[d["surf"].between(9, 500)]
-    d["pm2"] = d["prix"] / d["surf"]
-    d = d[d["pm2"].between(300, 15000)]
-
-    if "cinsee" in d.columns:
-        d["cinsee"] = d["cinsee"].str.zfill(5)
-        d["commune"] = d["cinsee"].map(COMMUNES)
-        d = d.dropna(subset=["commune"])
-
-    if "xl" in d.columns and "yl" in d.columns:
-        d["xl"] = pd.to_numeric(d["xl"], errors="coerce")
-        d["yl"] = pd.to_numeric(d["yl"], errors="coerce")
-        if HAS_PYPROJ:
-            try:
-                t = pyproj.Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
-                m = d["xl"].notna() & d["yl"].notna()
-                if m.any():
-                    lon, lat = t.transform(d.loc[m, "xl"].values, d.loc[m, "yl"].values)
-                    d.loc[m, "lon"] = lon
-                    d.loc[m, "lat"] = lat
-            except Exception:
-                d["lon"] = d["xl"]
-                d["lat"] = d["yl"]
+        df = pd.read_csv(file_path, sep=',', low_memory=False)
+        if df.empty:
+            return pd.DataFrame()
+        if "date_mutation" in df.columns:
+            df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
+        if "valeur_fonciere" in df.columns:
+            df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
+        if "surface_reelle_bati" in df.columns:
+            df["surface_reelle_bati"] = pd.to_numeric(df["surface_reelle_bati"], errors='coerce')
+        if "type_local" in df.columns:
+            df = df[df["type_local"].isin(['Maison', 'Appartement'])]
+        elif "libtypbien" in df.columns:
+            df = df[df["libtypbien"].str.contains("MAISON|APPARTEMENT", case=False, na=False)]
+        df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
+        if df.empty:
+            return pd.DataFrame()
+        df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
+        df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
+        if df.empty:
+            return pd.DataFrame()
+        if "code_commune" in df.columns:
+            df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
+        elif "l_codinsee" in df.columns:
+            df["code_commune"] = df["l_codinsee"].astype(str).str.zfill(5)
         else:
-            d["lon"] = d["xl"]
-            d["lat"] = d["yl"]
-        d.drop(columns=["xl", "yl", "type_brut"], errors="ignore", inplace=True)
+            st.error("Colonne code_commune manquante.")
+            return pd.DataFrame()
+        return df
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return pd.DataFrame()
 
-    keep = [c for c in ["date", "prix", "surf", "type", "pm2", "commune", "lat", "lon"]
-            if c in d.columns]
-    return d[keep].copy() if keep else None
+st.title("Dashboard Immobilier Gironde 2026")
 
-
-st.title("🏘️ Dashboard Immobilier Gironde 2026")
+st.sidebar.header("Commune")
+selected_commune_name = st.sidebar.selectbox("Choisissez :", sorted(NOMS_COMMUNES.keys()))
+selected_insee_code = NOMS_COMMUNES[selected_commune_name]
+st.info(f"Données pour **{selected_commune_name}** (INSEE {selected_insee_code})")
 
 with st.spinner("Chargement..."):
-    raw = load()
-if raw is None:
-    st.error("Donnees indisponibles.")
+    all_data = load_all_data()
+if all_data.empty:
+    st.warning("Aucune donnée disponible.")
     st.stop()
 
-with st.spinner("Nettoyage..."):
-    df = clean(raw)
-if df is None or df.empty:
-    st.error("Aucune transaction valide.")
-    st.stop()
+with st.sidebar.expander("Diagnostic"):
+    st.write(f"Code recherché : {selected_insee_code}")
+    st.write(f"Trouvé : {'OUI' if selected_insee_code in all_data['code_commune'].values else 'NON'}")
 
-st.sidebar.success(f"✅ {len(df):,} transactions")
-
-coms = sorted(df["commune"].unique())
-sel = st.sidebar.selectbox("Commune", coms,
-                           index=coms.index("Bordeaux") if "Bordeaux" in coms else 0)
-dc = df[df["commune"] == sel].copy()
-if dc.empty:
-    st.warning(f"Pas de donnees pour {sel}")
+df = all_data[all_data['code_commune'] == selected_insee_code].copy()
+if df.empty:
+    st.warning(f"Aucune transaction pour {selected_commune_name}.")
     st.stop()
 
 st.sidebar.header("Filtres")
-types_list = ["Tous"]
-if "type" in dc.columns:
-    types_list.extend(sorted(dc["type"].dropna().unique()))
-typ = st.sidebar.selectbox("Type", types_list)
-pmin = st.sidebar.number_input("Prix min", 0, step=20000)
-pmax = st.sidebar.number_input("Prix max", int(dc["prix"].max()), step=50000)
-smin = st.sidebar.slider("Surface min", 0, int(dc["surf"].max()), 0)
+if "code_postal" in df.columns and not df["code_postal"].isna().all():
+    cp_disp = sorted(df['code_postal'].astype(str).unique())
+    cp_sel = st.sidebar.multiselect("Code postal", cp_disp, default=cp_disp)
+    df_filtre = df[df['code_postal'].astype(str).isin(cp_sel)].copy()
+else:
+    df_filtre = df.copy()
 
-f = dc.copy()
-f = f[f["prix"].between(pmin, pmax) & (f["surf"] >= smin)]
-if typ != "Tous" and "type" in f.columns:
-    f = f[f["type"] == typ]
-if f.empty:
-    st.warning("Aucun resultat.")
+types_dispo = ["Tous"]
+if "type_local" in df_filtre.columns:
+    types_dispo.extend(sorted(df_filtre["type_local"].dropna().unique()))
+type_local = st.sidebar.selectbox("Type", types_dispo)
+prix_min = st.sidebar.number_input("Prix min", 0, step=10000, value=0)
+prix_max = st.sidebar.number_input("Prix max", int(df['valeur_fonciere'].max()) if not df.empty else 1000000, step=10000)
+
+df_filtre = df_filtre[(df_filtre['valeur_fonciere'] >= prix_min) & (df_filtre['valeur_fonciere'] <= prix_max)].copy()
+if type_local != 'Tous' and "type_local" in df_filtre.columns:
+    df_filtre = df_filtre[df_filtre['type_local'] == type_local]
+if df_filtre.empty:
+    st.warning("Aucun résultat.")
     st.stop()
 
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Prix/m²", f"{f['pm2'].mean():,.0f} €")
-k2.metric("Median", f"{f['prix'].median():,.0f} €")
-k3.metric("Transactions", f"{len(f):,}")
-k4.metric("Surface moy", f"{f['surf'].mean():.0f} m²")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Prix/m²", f"{df_filtre['prix_m2'].mean():.0f} €")
+c2.metric("Médian", f"{df_filtre['valeur_fonciere'].median():.0f} €")
+c3.metric("Transactions", f"{len(df_filtre):,}")
+c4.metric("Surface moy", f"{df_filtre['surface_reelle_bati'].mean():.0f} m²")
 
-c1, c2 = st.columns(2)
-clr = "type" if "type" in f.columns else None
-with c1:
-    fig = px.histogram(f, x="pm2", nbins=30, color=clr, title=f"Prix/m² – {sel}")
-    st.plotly_chart(fig, use_container_width=True)
-with c2:
-    fig = px.scatter(f, x="surf", y="prix", color=clr, title="Surface vs Prix", opacity=0.6)
-    st.plotly_chart(fig, use_container_width=True)
+col1, col2 = st.columns(2)
+color_col = "type_local" if "type_local" in df_filtre.columns else None
+with col1:
+    fig = px.histogram(df_filtre, x='prix_m2', nbins=40, color=color_col, marginal="box")
+    st.plotly_chart(fig, width='stretch')
+with col2:
+    if color_col:
+        fig = px.pie(df_filtre, names='type_local')
+        st.plotly_chart(fig, width='stretch')
 
-st.subheader(f"🗺️ Carte – {sel}")
-if "lat" in f.columns and "lon" in f.columns:
-    fm = f[["lat", "lon", "pm2", "surf"]].dropna().copy()
-    fm["lat"] = pd.to_numeric(fm["lat"], errors="coerce")
-    fm["lon"] = pd.to_numeric(fm["lon"], errors="coerce")
-    fm = fm.dropna()
-    ok = fm["lat"].between(-90, 90) & fm["lon"].between(-180, 180)
-    if ok.any():
-        carte = fm[ok].copy()
-        if len(carte) > 500:
-            carte = carte.sample(500, random_state=42)
-        st.map(carte, latitude="lat", longitude="lon", size="surf", color="pm2")
+# ------------------------------------------------------------
+# CARTE avec st.map (remplace scatter_mapbox)
+# ------------------------------------------------------------
+st.subheader(f"Carte des transactions - {selected_commune_name}")
+if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
+    map_data = df_filtre[['latitude', 'longitude', 'prix_m2', 'surface_reelle_bati']].copy()
+    map_data['latitude'] = pd.to_numeric(map_data['latitude'], errors='coerce')
+    map_data['longitude'] = pd.to_numeric(map_data['longitude'], errors='coerce')
+    map_data = map_data.dropna()
+    map_data = map_data[
+        (map_data['latitude'].between(-90, 90)) &
+        (map_data['longitude'].between(-180, 180))
+    ]
+    if not map_data.empty:
+        sample_size = min(2000, len(map_data))
+        if sample_size > 0:
+            map_sample = map_data.sample(n=sample_size, random_state=42)
+            st.map(map_sample, latitude="latitude", longitude="longitude",
+                   size="surface_reelle_bati", color="prix_m2")
+        else:
+            st.warning("Aucune donnée à afficher.")
     else:
-        st.warning("Coordonnees non converties.")
+        st.warning("Coordonnées hors limites.")
 else:
-    st.info("Pas de coordonnees.")
+    st.info("Pas de coordonnées.")
 
-if "date" in f.columns:
-    ft = f.dropna(subset=["date"]).copy()
-    if not ft.empty:
-        ft["mois"] = ft["date"].dt.strftime("%Y-%m")
-        agg = ft.groupby("mois").agg(pm2=("pm2", "mean"), nb=("prix", "count")).reset_index()
-        st.subheader("📊 Evolution")
-        c1, c2 = st.columns(2)
-        with c1:
-            fig = px.line(agg, x="mois", y="pm2", markers=True, title="Prix/m²")
-            st.plotly_chart(fig, use_container_width=True)
-        with c2:
-            fig = px.bar(agg, x="mois", y="nb", title="Transactions")
-            st.plotly_chart(fig, use_container_width=True)
-
-st.subheader("💰 Top 5")
-cols = [c for c in ["date", "prix", "surf", "pm2", "type"] if c in f.columns]
+# --- Dernières transactions ---
+st.subheader("Dernières transactions")
+cols = [c for c in ["date_mutation", "valeur_fonciere", "surface_reelle_bati", "prix_m2", "type_local", "code_postal"] if c in df_filtre.columns]
 if cols:
-    top = f.nlargest(5, "prix")[cols].copy()
-    top["prix"] = top["prix"].apply(lambda x: f"{x:,.0f} €")
-    top["pm2"] = top["pm2"].apply(lambda x: f"{x:,.0f} €/m²")
-    st.dataframe(top, hide_index=True, use_container_width=True)
+    aff = df_filtre.sort_values('date_mutation', ascending=False).head(100).copy()
+    if "valeur_fonciere" in aff.columns:
+        aff["valeur_fonciere"] = aff["valeur_fonciere"].apply(lambda x: f"{x:,.0f} €")
+    if "prix_m2" in aff.columns:
+        aff["prix_m2"] = aff["prix_m2"].apply(lambda x: f"{x:,.0f} €/m²")
+    if "date_mutation" in aff.columns:
+        aff["date_mutation"] = aff["date_mutation"].dt.strftime("%d/%m/%Y")
+    st.dataframe(aff[cols], hide_index=True, width='stretch')
 
-st.subheader("📋 Dernieres")
-if cols:
-    rec = f.sort_values("date", ascending=False).head(30)[cols].copy()
-    rec["prix"] = rec["prix"].apply(lambda x: f"{x:,.0f} €")
-    rec["pm2"] = rec["pm2"].apply(lambda x: f"{x:,.0f} €/m²")
-    st.dataframe(rec, hide_index=True, use_container_width=True)
-
-st.caption(f"📊 DVF+ Gironde – {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.caption(f"Dashboard Gironde 2026 - {datetime.now().strftime('%d/%m/%Y %H:%M')}")
