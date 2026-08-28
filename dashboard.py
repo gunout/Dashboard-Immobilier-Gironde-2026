@@ -1,4 +1,4 @@
-# dashboard_gironde_2026.py – adapté pour DVF+ (séparateur |, colonnes spécifiques)
+# dashboard_gironde_2026.py – version finale (sans low_memory, séparateur |)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -39,68 +39,77 @@ def load_gironde_2026_data():
             return pd.DataFrame()
 
         with st.spinner("🔄 Lecture du CSV (séparateur |)..."):
+            # Lecture en mode texte avec python engine, sans low_memory
             df = pd.read_csv(
                 io.StringIO(response.text),
-                sep='|',                     # <-- séparateur pipe
+                sep='|',
                 quotechar='"',
                 engine='python',
                 on_bad_lines='skip',
-                low_memory=False
+                dtype=str,  # tout en string pour éviter les erreurs de conversion
             )
         
         if df.empty:
             st.warning("Le fichier est vide ou toutes les lignes ont été ignorées.")
             return pd.DataFrame()
         
-        # Renommer les colonnes pour qu'elles correspondent aux noms attendus
+        # Renommer les colonnes selon le format DVF+
         rename_map = {
             'datemut': 'date_mutation',
             'valeurfonc': 'valeur_fonciere',
             'sbati': 'surface_reelle_bati',
             'libtypbien': 'type_local',
             'l_codinsee': 'code_commune',
-            'geompar_x': 'longitude_lambert',  # on garde pour conversion
-            'geompar_y': 'latitude_lambert'
+            'geompar_x': 'longitude_lambert',
+            'geompar_y': 'latitude_lambert',
+            'l_codepost': 'code_postal',   # si cette colonne existe
+            'nbpieceprin': 'nombre_pieces_principales'  # selon le nom exact
         }
-        # Seules les colonnes existantes sont renommées
-        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        # Ne renommer que les colonnes existantes
+        for old, new in rename_map.items():
+            if old in df.columns:
+                df = df.rename(columns={old: new})
         
-        # Vérifier que les colonnes essentielles sont présentes
+        # Vérifier les colonnes essentielles
         required = ['valeur_fonciere', 'surface_reelle_bati']
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            st.error(f"Colonnes obligatoires manquantes : {missing}")
-            return pd.DataFrame()
+        for col in required:
+            if col not in df.columns:
+                st.error(f"Colonne obligatoire manquante : {col}")
+                return pd.DataFrame()
         
-        # Si les coordonnées Lambert sont présentes, on les convertit en WGS84
+        # Conversion numérique pour les colonnes essentielles
+        df['valeur_fonciere'] = pd.to_numeric(df['valeur_fonciere'], errors='coerce')
+        df['surface_reelle_bati'] = pd.to_numeric(df['surface_reelle_bati'], errors='coerce')
+        
+        # Conversion des coordonnées Lambert → WGS84 si disponibles
         if 'longitude_lambert' in df.columns and 'latitude_lambert' in df.columns and HAS_PYPROJ:
             try:
                 lambert93 = pyproj.Proj('+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs')
                 wgs84 = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
-                lon_vals = df['longitude_lambert'].values
-                lat_vals = df['latitude_lambert'].values
-                new_lon, new_lat = pyproj.transform(lambert93, wgs84, lon_vals, lat_vals)
-                df['longitude'] = new_lon
-                df['latitude'] = new_lat
-                # On peut supprimer les colonnes Lambert pour économiser la mémoire
+                lon_vals = pd.to_numeric(df['longitude_lambert'], errors='coerce').values
+                lat_vals = pd.to_numeric(df['latitude_lambert'], errors='coerce').values
+                # Filtrer les valeurs valides
+                mask = ~(pd.isna(lon_vals) | pd.isna(lat_vals))
+                if mask.any():
+                    new_lon, new_lat = pyproj.transform(lambert93, wgs84, lon_vals[mask], lat_vals[mask])
+                    df.loc[mask, 'longitude'] = new_lon
+                    df.loc[mask, 'latitude'] = new_lat
                 df = df.drop(columns=['longitude_lambert', 'latitude_lambert'], errors='ignore')
             except Exception as e:
-                st.warning(f"Conversion Lambert → WGS84 échouée : {e}. Les coordonnées resteront en Lambert.")
-                # On garde les colonnes Lambert telles quelles (mais elles ne seront pas utilisées)
+                st.warning(f"Conversion Lambert → WGS84 échouée : {e}")
         elif 'longitude_lambert' in df.columns and 'latitude_lambert' in df.columns and not HAS_PYPROJ:
-            st.warning("pyproj non installé. Les coordonnées Lambert ne seront pas converties.")
-            # On peut tout de même utiliser les coordonnées brutes, mais elles seront en mètres (affichage décalé)
-            df['longitude'] = df['longitude_lambert']
-            df['latitude'] = df['latitude_lambert']
+            st.warning("pyproj non installé. Les coordonnées restent en Lambert (affichage décalé).")
+            df['longitude'] = pd.to_numeric(df['longitude_lambert'], errors='coerce')
+            df['latitude'] = pd.to_numeric(df['latitude_lambert'], errors='coerce')
             df = df.drop(columns=['longitude_lambert', 'latitude_lambert'], errors='ignore')
         
-        # Réduire aux colonnes utiles
-        kept_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
+        # Garder uniquement les colonnes utiles
+        keep_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
                      'type_local', 'code_commune', 'code_postal', 'latitude', 'longitude',
-                     'nombre_pieces_principales']  # cette dernière n'existe peut-être pas
-        available_cols = [c for c in kept_cols if c in df.columns]
-        if available_cols:
-            df = df[available_cols]
+                     'nombre_pieces_principales']
+        available = [c for c in keep_cols if c in df.columns]
+        if available:
+            df = df[available]
         
         mem = round(df.memory_usage(deep=True).sum() / 1024**2, 1)
         st.sidebar.success(f"✅ {len(df):,} transactions chargées ({mem} Mo)")
@@ -119,7 +128,7 @@ def prepare_data(df):
     if 'date_mutation' in df_clean.columns:
         df_clean["date_mutation"] = pd.to_datetime(df_clean["date_mutation"], errors='coerce')
     
-    # Numériques
+    # Numeriques déjà convertis pour les colonnes principales, mais on s'assure
     for col in ['valeur_fonciere', 'surface_reelle_bati']:
         if col in df_clean.columns:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
@@ -177,7 +186,7 @@ if df_commune.empty:
 
 # --- Filtres ---
 st.sidebar.header("🔧 Filtres")
-if 'code_postal' in df_commune.columns:
+if 'code_postal' in df_commune.columns and not df_commune['code_postal'].isna().all():
     cp_options = sorted(df_commune['code_postal'].astype(str).unique())
     cp_selection = st.sidebar.multiselect("Code postal", cp_options, default=cp_options)
 else:
@@ -228,21 +237,18 @@ st.subheader(f"🗺️ Carte des transactions - {selected} (2026)")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     df_carte = df_filtre.copy()
-    # Conversion en numérique (au cas où)
-    df_carte['latitude'] = pd.to_numeric(df_carte['latitude'].astype(str).str.replace(',', '.'), errors='coerce')
-    df_carte['longitude'] = pd.to_numeric(df_carte['longitude'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_carte['latitude'] = pd.to_numeric(df_carte['latitude'], errors='coerce')
+    df_carte['longitude'] = pd.to_numeric(df_carte['longitude'], errors='coerce')
     df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
 
     if not df_carte.empty:
-        # Affichage diagnostic
         lat_min, lat_max = df_carte['latitude'].min(), df_carte['latitude'].max()
         lon_min, lon_max = df_carte['longitude'].min(), df_carte['longitude'].max()
         with st.expander("🔍 Diagnostic des coordonnées", expanded=False):
             st.write(f"Latitude : min {lat_min:.4f}, max {lat_max:.4f}")
             st.write(f"Longitude : min {lon_min:.4f}, max {lon_max:.4f}")
-            # Vérifier si les coordonnées sont en degrés (sinon on affiche un avertissement)
             if lat_max > 90 or lat_min < -90 or lon_max > 180 or lon_min < -180:
-                st.warning("⚠️ Les coordonnées semblent encore en mètres. La conversion n'a pas été appliquée.")
+                st.warning("⚠️ Les coordonnées sont en mètres (Lambert) – affichage décalé possible.")
 
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
