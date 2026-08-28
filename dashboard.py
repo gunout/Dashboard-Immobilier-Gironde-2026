@@ -55,8 +55,9 @@ def load_data():
             return None
 
         # Affichage des colonnes dans la barre latérale (diagnostic)
-        st.sidebar.write("**Colonnes trouvées :**", list(df.columns))
-        st.sidebar.write(f"**Nombre de lignes :** {len(df):,}")
+        with st.sidebar:
+            st.write("**Colonnes trouvées :**", list(df.columns))
+            st.write(f"**Nombre de lignes :** {len(df):,}")
 
         return df
 
@@ -95,6 +96,10 @@ def prepare_data(df):
         st.error(f"Colonnes disponibles : {list(d.columns)}")
         return None
 
+    # ✅ CONVERSION DATE EN DATETIME (CORRECTION PRINCIPALE)
+    if 'date_mutation' in d.columns:
+        d['date_mutation'] = pd.to_datetime(d['date_mutation'], errors='coerce')
+
     # --- Conversion numérique ---
     d['valeur_fonciere'] = pd.to_numeric(d['valeur_fonciere'], errors='coerce')
     d['surface_reelle_bati'] = pd.to_numeric(d['surface_reelle_bati'], errors='coerce')
@@ -103,7 +108,7 @@ def prepare_data(df):
     if 'type_local' in d.columns:
         d = d[d['type_local'].isin(['Maison', 'Appartement'])]
 
-    # --- Suppression des NA ---
+    # --- Suppression des NA sur les colonnes critiques ---
     d = d.dropna(subset=['valeur_fonciere', 'surface_reelle_bati'])
 
     # --- Filtres de cohérence ---
@@ -136,7 +141,6 @@ def prepare_data(df):
                     new_lon, new_lat = pyproj.transform(lambert93, wgs84, lon_vals[mask], lat_vals[mask])
                     d.loc[mask, 'longitude'] = new_lon
                     d.loc[mask, 'latitude'] = new_lat
-                # Nettoyer les colonnes Lambert
                 d = d.drop(columns=['longitude_lambert', 'latitude_lambert'], errors='ignore')
                 st.sidebar.success("✅ Conversion Lambert → WGS84 effectuée")
             except Exception as e:
@@ -154,9 +158,8 @@ def prepare_data(df):
                  'prix_m2', 'nom_commune']
     keep_cols = [c for c in keep_cols if c in d.columns]
     if keep_cols:
-        d = d[keep_cols]
+        d = d[keep_cols].copy()  # ✅ .copy() pour éviter SettingWithCopyWarning
 
-    # --- Affichage des statistiques ---
     st.sidebar.success(f"✅ {len(d):,} transactions après nettoyage")
     return d
 
@@ -183,7 +186,7 @@ selected = st.sidebar.selectbox(
     communes,
     index=communes.index("Bordeaux") if "Bordeaux" in communes else 0
 )
-df_commune = df[df['nom_commune'] == selected].copy()
+df_commune = df[df['nom_commune'] == selected].copy()  # ✅ .copy()
 if df_commune.empty:
     st.warning(f"Aucune donnée pour {selected}")
     st.stop()
@@ -211,16 +214,16 @@ surface_min = st.sidebar.slider(
     value=0
 )
 
-df_filtre = df_commune.copy()
+df_filtre = df_commune.copy()  # ✅ .copy()
 if cp_selection and 'code_postal' in df_filtre.columns:
-    df_filtre = df_filtre[df_filtre['code_postal'].astype(str).isin(cp_selection)]
+    df_filtre = df_filtre[df_filtre['code_postal'].astype(str).isin(cp_selection)].copy()
 df_filtre = df_filtre[
     (df_filtre['valeur_fonciere'] >= prix_min) &
     (df_filtre['valeur_fonciere'] <= prix_max) &
     (df_filtre['surface_reelle_bati'] >= surface_min)
-]
+].copy()
 if type_local != 'Tous' and 'type_local' in df_filtre.columns:
-    df_filtre = df_filtre[df_filtre['type_local'] == type_local]
+    df_filtre = df_filtre[df_filtre['type_local'] == type_local].copy()
 if df_filtre.empty:
     st.warning("Aucune transaction ne correspond aux filtres.")
     st.stop()
@@ -278,7 +281,7 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
                 st.warning("⚠️ Les coordonnées semblent être en mètres (Lambert). Affichage approximatif.")
 
         if len(df_carte) > 500:
-            df_carte = df_carte.sample(500)
+            df_carte = df_carte.sample(500, random_state=42)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon aléatoire)")
 
         try:
@@ -303,7 +306,6 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
             st.warning(f"⚠️ Erreur avec OpenStreetMap : {e}")
-            st.info("🔄 Tentative avec le style Carto-Positron...")
             try:
                 fig = px.scatter_map(
                     df_carte,
@@ -333,40 +335,45 @@ else:
 
 # --- Évolution temporelle ---
 if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
-    df_filtre['mois'] = df_filtre['date_mutation'].dt.to_period('M')
-    df_mensuel = df_filtre.groupby('mois').agg({
-        'prix_m2': 'mean',
-        'valeur_fonciere': ['count', 'mean']
-    }).round(0)
-    df_mensuel.columns = ['prix_m2_moyen', 'nb_transactions', 'prix_moyen']
-    df_mensuel = df_mensuel.reset_index()
-    df_mensuel['mois'] = df_mensuel['mois'].astype(str)
+    # ✅ Vérification que date_mutation est bien datetime
+    if pd.api.types.is_datetime64_any_dtype(df_filtre['date_mutation']):
+        df_temp = df_filtre.dropna(subset=['date_mutation']).copy()
+        df_temp['mois'] = df_temp['date_mutation'].dt.to_period('M')
+        df_mensuel = df_temp.groupby('mois').agg({
+            'prix_m2': 'mean',
+            'valeur_fonciere': ['count', 'mean']
+        }).round(0)
+        df_mensuel.columns = ['prix_m2_moyen', 'nb_transactions', 'prix_moyen']
+        df_mensuel = df_mensuel.reset_index()
+        df_mensuel['mois'] = df_mensuel['mois'].astype(str)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        fig = px.line(
-            df_mensuel,
-            x='mois',
-            y='prix_m2_moyen',
-            markers=True,
-            title="Évolution du prix au m²"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    with col2:
-        fig = px.bar(
-            df_mensuel,
-            x='mois',
-            y='nb_transactions',
-            title="Nombre de transactions par mois"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = px.line(
+                df_mensuel,
+                x='mois',
+                y='prix_m2_moyen',
+                markers=True,
+                title="Évolution du prix au m²"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = px.bar(
+                df_mensuel,
+                x='mois',
+                y='nb_transactions',
+                title="Nombre de transactions par mois"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("📅 Les dates ne sont pas au format datetime - graphique temporel désactivé.")
 
 # --- Top 5 des ventes ---
 st.subheader("💰 Top 5 des ventes les plus élevées")
 top_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']
 available_top = [c for c in top_cols if c in df_filtre.columns]
 if available_top:
-    top_ventes = df_filtre.nlargest(5, 'valeur_fonciere')[available_top]
+    top_ventes = df_filtre.nlargest(5, 'valeur_fonciere')[available_top].copy()  # ✅ .copy()
     top_ventes['valeur_fonciere'] = top_ventes['valeur_fonciere'].apply(lambda x: f"{x:,.0f} €")
     top_ventes['prix_m2'] = top_ventes['prix_m2'].apply(lambda x: f"{x:,.0f} €/m²")
     st.dataframe(top_ventes, hide_index=True, use_container_width=True)
@@ -376,7 +383,7 @@ st.subheader("📋 Dernières transactions")
 display_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']
 available_display = [c for c in display_cols if c in df_filtre.columns]
 if available_display:
-    display = df_filtre.sort_values('date_mutation', ascending=False).head(50)
+    display = df_filtre.sort_values('date_mutation', ascending=False).head(50).copy()  # ✅ .copy()
     for c in ['valeur_fonciere', 'prix_m2']:
         if c in display.columns:
             display[c] = display[c].apply(lambda x: f"{x:,.0f} €" + ("/m²" if c == 'prix_m2' else ""))
