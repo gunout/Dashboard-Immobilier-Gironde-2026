@@ -47,22 +47,18 @@ def clean(df):
         return None
     d = df.copy()
 
-    # Colonnes utiles selon VOTRE fichier
-    cols_map = {
-        "datemut": "date",
-        "valeurfonc": "prix",
-        "sbati": "surf",
-        "libtypbien": "type",
-        "l_codinsee": "cinsee",
-        "geompar_x": "xl",
-        "geompar_y": "yl",
+    # Renommage colonnes DVF+
+    renames = {
+        "datemut": "date", "valeurfonc": "prix",
+        "sbati": "surf", "libtypbien": "type_brut",
+        "l_codinsee": "cinsee", "geompar_x": "xl", "geompar_y": "yl",
     }
-    for old, new in cols_map.items():
+    for old, new in renames.items():
         if old in d.columns:
             d.rename(columns={old: new}, inplace=True)
 
     if "prix" not in d.columns or "surf" not in d.columns:
-        st.error(f"Colonnes manquantes. Disponibles: {list(d.columns)[:10]}...")
+        st.error(f"Colonnes manquantes. Disponibles: {list(d.columns)[:10]}")
         return None
 
     # Conversions
@@ -71,15 +67,17 @@ def clean(df):
     if "date" in d.columns:
         d["date"] = pd.to_datetime(d["date"], errors="coerce")
 
-    # ✅ CORRECTION : Filtrer sur les vraies valeurs du fichier
-    if "type" in d.columns:
-        d = d[d["type"].str.contains("MAISON|APPARTEMENT", case=False, na=False)]
+    # ✅ FILTRE CORRECT : valeurs reelles du fichier
+    if "type_brut" in d.columns:
+        mask = d["type_brut"].str.contains("MAISON|APPARTEMENT", case=False, na=False)
+        d = d[mask].copy()
+        # Extraire le type court
+        d["type"] = d["type_brut"].str.extract(r"(MAISON|APPARTEMENT)", expand=False)
+        d["type"] = d["type"].str.title()
 
     d = d.dropna(subset=["prix", "surf"])
     d = d[d["prix"].between(20000, 5000000)]
     d = d[d["surf"].between(9, 500)]
-
-    # Prix m2
     d["pm2"] = d["prix"] / d["surf"]
     d = d[d["pm2"].between(300, 15000)]
 
@@ -89,12 +87,7 @@ def clean(df):
         d["commune"] = d["cinsee"].map(COMMUNES)
         d = d.dropna(subset=["commune"])
 
-    # Nettoyer le type pour l'affichage
-    if "type" in d.columns:
-        d["type"] = d["type"].str.extract(r"(MAISON|APPARTEMENT)", expand=False)
-        d["type"] = d["type"].str.title()
-
-    # Coordonnees Lambert -> WGS84
+    # Coordonnees Lambert 93 -> WGS84
     if "xl" in d.columns and "yl" in d.columns:
         d["xl"] = pd.to_numeric(d["xl"], errors="coerce")
         d["yl"] = pd.to_numeric(d["yl"], errors="coerce")
@@ -106,14 +99,13 @@ def clean(df):
                     lon, lat = t.transform(d.loc[m, "xl"].values, d.loc[m, "yl"].values)
                     d.loc[m, "lon"] = lon
                     d.loc[m, "lat"] = lat
-            except Exception as e:
-                st.warning(f"Conversion coords: {e}")
+            except Exception:
                 d["lon"] = d["xl"]
                 d["lat"] = d["yl"]
         else:
             d["lon"] = d["xl"]
             d["lat"] = d["yl"]
-        d.drop(columns=["xl", "yl"], errors="ignore", inplace=True)
+        d.drop(columns=["xl", "yl", "type_brut"], errors="ignore", inplace=True)
 
     keep = [c for c in ["date", "prix", "surf", "type", "pm2", "commune", "lat", "lon"]
             if c in d.columns]
@@ -125,31 +117,31 @@ def clean(df):
 # ═══════════════════════════════════════════
 st.title("🏘️ Dashboard Immobilier Gironde 2026")
 
-with st.spinner("Chargement des donnees..."):
+with st.spinner("Chargement..."):
     raw = load()
 
 if raw is None:
-    st.error("Donnees indisponibles. Verifiez le lien GitHub Release.")
+    st.error("Donnees indisponibles.")
     st.stop()
 
-with st.spinner("Nettoyage des donnees..."):
+with st.spinner("Nettoyage..."):
     df = clean(raw)
 
 if df is None or df.empty:
-    st.error("Aucune transaction valide apres nettoyage.")
-    st.info("Verifiez que le fichier contient des Maisons ou Appartements.")
+    st.error("Aucune transaction valide.")
     st.stop()
 
-st.sidebar.success(f"✅ {len(df):,} transactions chargees")
+st.sidebar.success(f"✅ {len(df):,} transactions")
 
-# Stats rapides dans sidebar
+# Stats sidebar
 with st.sidebar.expander("Stats globales"):
-    st.write(f"Prix/m2 moyen: {df['pm2'].mean():,.0f} €")
+    st.write(f"Prix/m² moyen: {df['pm2'].mean():,.0f} €")
     st.write(f"Communes: {df['commune'].nunique()}")
     if "type" in df.columns:
-        st.write(f"Types: {df['type'].value_counts().to_dict()}")
+        for t, n in df["type"].value_counts().items():
+            st.write(f"  {t}: {n:,}")
 
-# Select commune
+# Commune
 coms = sorted(df["commune"].unique())
 sel = st.sidebar.selectbox("Commune", coms,
                            index=coms.index("Bordeaux") if "Bordeaux" in coms else 0)
@@ -160,11 +152,11 @@ if dc.empty:
     st.stop()
 
 # Filtres
-st.sidebar.header("🔧 Filtres")
-types_dispo = ["Tous"]
+st.sidebar.header("Filtres")
+types_list = ["Tous"]
 if "type" in dc.columns:
-    types_dispo.extend(sorted(dc["type"].dropna().unique()))
-typ = st.sidebar.selectbox("Type", types_dispo)
+    types_list.extend(sorted(dc["type"].dropna().unique()))
+typ = st.sidebar.selectbox("Type", types_list)
 pmin = st.sidebar.number_input("Prix min (€)", 0, step=20000)
 pmax = st.sidebar.number_input("Prix max (€)", int(dc["prix"].max()), step=50000)
 smin = st.sidebar.slider("Surface min (m²)", 0, int(dc["surf"].max()), 0)
@@ -175,13 +167,13 @@ if typ != "Tous" and "type" in f.columns:
     f = f[f["type"] == typ]
 
 if f.empty:
-    st.warning("Aucun resultat avec ces filtres.")
+    st.warning("Aucun resultat.")
     st.stop()
 
 # KPIs
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Prix/m² moyen", f"{f['pm2'].mean():,.0f} €")
-k2.metric("Prix médian", f"{f['prix'].median():,.0f} €")
+k2.metric("Prix median", f"{f['prix'].median():,.0f} €")
 k3.metric("Transactions", f"{len(f):,}")
 k4.metric("Surface moy.", f"{f['surf'].mean():.0f} m²")
 
@@ -191,7 +183,7 @@ clr = "type" if "type" in f.columns else None
 
 with c1:
     fig = px.histogram(f, x="pm2", nbins=30, color=clr,
-                      title=f"Distribution prix/m² – {sel}")
+                      title=f"Prix/m² – {sel}")
     st.plotly_chart(fig, use_container_width=True)
 
 with c2:
@@ -206,41 +198,31 @@ if "lat" in f.columns and "lon" in f.columns:
     fm["lat"] = pd.to_numeric(fm["lat"], errors="coerce")
     fm["lon"] = pd.to_numeric(fm["lon"], errors="coerce")
     fm = fm.dropna()
-
-    # Verif coordonnees valides WGS84
     ok = fm["lat"].between(-90, 90) & fm["lon"].between(-180, 180)
-
     if ok.any():
         carte = fm[ok].copy()
         if len(carte) > 500:
             carte = carte.sample(500, random_state=42)
-            st.caption(f"📍 500 points affichés sur {len(fm)}")
+            st.caption(f"📍 500 points sur {len(fm)}")
         st.map(carte, latitude="lat", longitude="lon", size="surf", color="pm2")
     else:
-        st.warning("⚠️ Coordonnées en Lambert (non converties).")
-        with st.expander("Diagnostic"):
-            st.dataframe(fm.describe())
+        st.warning("Coordonnees non converties (Lambert brut).")
 else:
-    st.info("📍 Pas de coordonnées disponibles.")
+    st.info("Pas de coordonnees.")
 
-# Evolution temporelle
+# Temporel
 if "date" in f.columns:
     ft = f.dropna(subset=["date"]).copy()
     if not ft.empty:
         ft["mois"] = ft["date"].dt.strftime("%Y-%m")
-        agg = ft.groupby("mois").agg(
-            pm2=("pm2", "mean"),
-            nb=("prix", "count")
-        ).reset_index()
-
-        st.subheader("📊 Évolution dans le temps")
+        agg = ft.groupby("mois").agg(pm2=("pm2", "mean"), nb=("prix", "count")).reset_index()
+        st.subheader("📊 Evolution")
         c1, c2 = st.columns(2)
         with c1:
-            fig = px.line(agg, x="mois", y="pm2", markers=True,
-                         title="Prix/m² moyen")
+            fig = px.line(agg, x="mois", y="pm2", markers=True, title="Prix/m²")
             st.plotly_chart(fig, use_container_width=True)
         with c2:
-            fig = px.bar(agg, x="mois", y="nb", title="Nb transactions")
+            fig = px.bar(agg, x="mois", y="nb", title="Transactions")
             st.plotly_chart(fig, use_container_width=True)
 
 # Top 5
@@ -248,17 +230,19 @@ st.subheader("💰 Top 5 ventes")
 cols = [c for c in ["date", "prix", "surf", "pm2", "type"] if c in f.columns]
 if cols:
     top = f.nlargest(5, "prix")[cols].copy()
-    top["prix"] = top["prix"].apply(lambda x: f"{x:,.0f} €")
-    top["pm2"] = top["pm2"].apply(lambda x: f"{x:,.0f} €/m²")
-    st.dataframe(top, hide_index=True, use_container_width=True)
+    top["prix_fmt"] = top["prix"].apply(lambda x: f"{x:,.0f} €")
+    top["pm2_fmt"] = top["pm2"].apply(lambda x: f"{x:,.0f} €/m²")
+    st.dataframe(top[["prix_fmt", "pm2_fmt"] + [c for c in cols if c not in ["prix", "pm2"]]],
+                 hide_index=True, use_container_width=True)
 
-# Dernieres transactions
-st.subheader("📋 Dernières transactions")
+# Dernieres
+st.subheader("📋 Dernieres transactions")
 if cols:
     rec = f.sort_values("date", ascending=False).head(30)[cols].copy()
-    rec["prix"] = rec["prix"].apply(lambda x: f"{x:,.0f} €")
-    rec["pm2"] = rec["pm2"].apply(lambda x: f"{x:,.0f} €/m²")
-    st.dataframe(rec, hide_index=True, use_container_width=True)
+    rec["prix_fmt"] = rec["prix"].apply(lambda x: f"{x:,.0f} €")
+    rec["pm2_fmt"] = rec["pm2"].apply(lambda x: f"{x:,.0f} €/m²")
+    show = ["prix_fmt", "pm2_fmt"] + [c for c in cols if c not in ["prix", "pm2"]]
+    st.dataframe(rec[show], hide_index=True, use_container_width=True)
 
 st.markdown("---")
-st.caption(f"📊 DVF+ Gironde – MAJ: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.caption(f"📊 DVF+ Gironde – {datetime.now().strftime('%d/%m/%Y %H:%M')}")
