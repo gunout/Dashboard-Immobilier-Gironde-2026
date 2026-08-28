@@ -1,4 +1,4 @@
-# dashboard_gironde_2026.py – version avec téléchargement depuis GitHub Release
+# dashboard_gironde_2026.py – version robuste avec on_bad_lines='skip'
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -24,42 +24,47 @@ COMMUNES_GIRONDE = {
     "33243": "Libourne", "33522": "Arcachon", "33529": "La Teste-de-Buch", "33550": "Cestas",
 }
 
-# --- URL du fichier sur votre Release GitHub ---
 GITHUB_CSV_URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/releases/download/DVF-33/dvf_plus_d33.csv"
 
 @st.cache_data(ttl=3600)
 def load_gironde_2026_data():
-    """Télécharge le fichier CSV depuis la release GitHub"""
+    """Télécharge le CSV avec gestion des lignes mal formées."""
     try:
         with st.spinner("📥 Téléchargement depuis GitHub Release..."):
             response = requests.get(GITHUB_CSV_URL, stream=True, timeout=60)
             response.raise_for_status()
         
-        # Vérifier que le contenu est bien du CSV (et pas une page HTML)
         content_type = response.headers.get('content-type', '')
         if 'text/html' in content_type:
-            st.error("Le lien GitHub renvoie une page HTML. Vérifiez que la release est publique et que le fichier est bien attaché.")
-            st.info("💡 Si la release est privée, vous pouvez la rendre publique dans les paramètres du dépôt.")
+            st.error("Le lien GitHub renvoie une page HTML. Vérifiez que la release est publique.")
             return pd.DataFrame()
 
-        with st.spinner("🔄 Lecture du CSV..."):
-            # On lit directement le texte (le fichier est brut, pas compressé)
-            df = pd.read_csv(io.StringIO(response.text), sep=',', low_memory=False)
+        with st.spinner("🔄 Lecture du CSV (mode tolérant)..."):
+            df = pd.read_csv(
+                io.StringIO(response.text),
+                sep=',',
+                quotechar='"',
+                engine='python',
+                on_bad_lines='skip',   # Ignore les lignes avec un mauvais format
+                low_memory=False
+            )
         
         if df.empty:
-            st.warning("Le fichier téléchargé est vide.")
+            st.warning("Le fichier est vide ou toutes les lignes ont été ignorées.")
             return pd.DataFrame()
         
+        # Réduire la mémoire en ne gardant que les colonnes utiles
+        needed = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
+                  'type_local', 'code_commune', 'code_postal',
+                  'latitude', 'longitude', 'nombre_pieces_principales']
+        available_cols = [c for c in needed if c in df.columns]
+        if available_cols:
+            df = df[available_cols]
+        
         mem = round(df.memory_usage(deep=True).sum() / 1024**2, 1)
-        st.sidebar.success(f"✅ {len(df):,} transactions chargées depuis GitHub ({mem} Mo)")
+        st.sidebar.success(f"✅ {len(df):,} transactions chargées ({mem} Mo)")
         return df
 
-    except requests.exceptions.HTTPError as e:
-        if response.status_code == 404:
-            st.error("❌ Fichier non trouvé (404). Vérifiez l'URL et que la release est publique.")
-        else:
-            st.error(f"Erreur HTTP : {e}")
-        return pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur de téléchargement : {e}")
         return pd.DataFrame()
@@ -87,13 +92,13 @@ def prepare_data(df):
         df_clean = df_clean.dropna(subset=['nom_commune'])
     return df_clean
 
-# --- Interface utilisateur ---
-st.title("🏘️ Dashboard Immobilier Gironde - 2026 (GitHub Release)")
+# --- Interface ---
+st.title("🏘️ Dashboard Immobilier Gironde - 2026 (GitHub)")
 st.markdown(f"Source : [dvf_plus_d33.csv]({GITHUB_CSV_URL})")
 
 df_brut = load_gironde_2026_data()
 if df_brut.empty:
-    st.info("Impossible de charger les données. Vérifiez que la release est publique et que le fichier est correct.")
+    st.info("Impossible de charger les données. Vérifiez la release GitHub.")
     if st.button("🔄 Réessayer"):
         st.rerun()
     st.stop()
@@ -158,48 +163,41 @@ with col2:
                      hover_data=['code_postal'])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte avec OpenStreetMap (rues visibles) ---
+# --- Carte avec OpenStreetMap ---
 st.subheader(f"🗺️ Carte des transactions - {selected} (2026)")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     df_carte = df_filtre.copy()
-    # Nettoyage des coordonnées
     df_carte['latitude'] = pd.to_numeric(df_carte['latitude'].astype(str).str.replace(',', '.'), errors='coerce')
     df_carte['longitude'] = pd.to_numeric(df_carte['longitude'].astype(str).str.replace(',', '.'), errors='coerce')
     df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
 
     if not df_carte.empty:
-        # Vérifier si les coordonnées sont en mètres (Lambert 93)
         lat_min, lat_max = df_carte['latitude'].min(), df_carte['latitude'].max()
         lon_min, lon_max = df_carte['longitude'].min(), df_carte['longitude'].max()
 
-        # Diagnostic
         with st.expander("🔍 Diagnostic des coordonnées", expanded=False):
             st.write(f"Latitude : min {lat_min:.4f}, max {lat_max:.4f}")
             st.write(f"Longitude : min {lon_min:.4f}, max {lon_max:.4f}")
             if lat_max > 90 or lat_min < -90 or lon_max > 180 or lon_min < -180:
-                st.warning("⚠️ Coordonnées en mètres (Lambert 93). Conversion automatique vers WGS84 pour les rues.")
+                st.warning("⚠️ Coordonnées en mètres (Lambert 93). Conversion automatique vers WGS84.")
                 if HAS_PYPROJ:
                     try:
                         lambert93 = pyproj.Proj('+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs')
                         wgs84 = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
-                        lon_vals = df_carte['longitude'].values
-                        lat_vals = df_carte['latitude'].values
-                        new_lon, new_lat = pyproj.transform(lambert93, wgs84, lon_vals, lat_vals)
+                        new_lon, new_lat = pyproj.transform(lambert93, wgs84, df_carte['longitude'].values, df_carte['latitude'].values)
                         df_carte['longitude'] = new_lon
                         df_carte['latitude'] = new_lat
-                        st.success("✅ Conversion effectuée. Les rues vont s'afficher.")
+                        st.success("✅ Conversion effectuée.")
                     except Exception as e:
                         st.error(f"Erreur de conversion : {e}")
                 else:
-                    st.error("❌ pyproj non installé. Ajoutez 'pyproj' dans requirements.txt pour la conversion automatique.")
+                    st.error("❌ pyproj non installé.")
 
-        # Limiter le nombre de points
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon)")
 
-        # Création de la carte avec scatter_map (OSM pour les rues)
         try:
             fig = px.scatter_map(
                 df_carte,
@@ -222,7 +220,6 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
             st.error(f"Erreur avec open-street-map : {e}")
-            st.warning("🔄 Tentative avec le style carto-positron (moins de détails mais plus stable)...")
             try:
                 fig = px.scatter_map(
                     df_carte,
@@ -245,11 +242,10 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e2:
                 st.error(f"Erreur définitive : {e2}")
-                st.info("ℹ️ La carte ne peut pas s'afficher. Vérifiez votre connexion internet (tuiles OpenStreetMap) ou les coordonnées.")
     else:
-        st.info("📍 Aucune coordonnée valide après nettoyage.")
+        st.info("📍 Aucune coordonnée valide.")
 else:
-    st.info("📍 Colonnes latitude/longitude non disponibles dans les données.")
+    st.info("📍 Colonnes latitude/longitude non disponibles.")
 
 # --- Évolution temporelle ---
 if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
@@ -287,4 +283,4 @@ for c in ['valeur_fonciere', 'prix_m2']:
 st.dataframe(display[available], hide_index=True, use_container_width=True)
 
 st.markdown("---")
-st.caption(f"Mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')} – DVF+ 2026 Gironde (33) – Fichier chargé depuis GitHub")
+st.caption(f"Mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')} – DVF+ 2026 Gironde (33) – GitHub Release")
