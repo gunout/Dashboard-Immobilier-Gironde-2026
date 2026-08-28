@@ -1,421 +1,289 @@
-# dashboard_gironde_2026.py
+# dashboard_gironde_2026.py – version définitive avec rues (scatter_map)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import numpy as np
-import requests
-import io
-import gzip
+import os
 from datetime import datetime
 
-# Configuration de la page
-st.set_page_config(
-    page_title="Dashboard Immobilier Gironde 2026",
-    page_icon="🏘️",
-    layout="wide"
-)
+# Détection de pyproj pour la conversion Lambert 93
+try:
+    import pyproj
+    HAS_PYPROJ = True
+except ImportError:
+    HAS_PYPROJ = False
 
-# --- Dictionnaire des principales communes de Gironde ---
+st.set_page_config(page_title="Dashboard Immobilier Gironde 2026", page_icon="🏘️", layout="wide")
+
+# --- Dictionnaire des communes ---
 COMMUNES_GIRONDE = {
-    "33063": "Bordeaux",
-    "33069": "Bruges",
-    "33075": "Cenon",
-    "33119": "Eysines",
-    "33192": "Gradignan",
-    "33200": "Gujan-Mestras",
-    "33249": "Lormont",
-    "33273": "Mérignac",
-    "33281": "Pessac",
-    "33312": "Saint-Médard-en-Jalles",
-    "33318": "Talence",
-    "33434": "Le Bouscat",
-    "33449": "Villenave-d'Ornon",
-    "33039": "Bègles",
-    "33056": "Blanquefort",
-    "33162": "Floirac",
-    "33243": "Libourne",
-    "33522": "Arcachon",
-    "33529": "La Teste-de-Buch",
-    "33550": "Cestas",
+    "33063": "Bordeaux", "33069": "Bruges", "33075": "Cenon", "33119": "Eysines",
+    "33192": "Gradignan", "33200": "Gujan-Mestras", "33249": "Lormont", "33273": "Mérignac",
+    "33281": "Pessac", "33312": "Saint-Médard-en-Jalles", "33318": "Talence", "33434": "Le Bouscat",
+    "33449": "Villenave-d'Ornon", "33039": "Bègles", "33056": "Blanquefort", "33162": "Floirac",
+    "33243": "Libourne", "33522": "Arcachon", "33529": "La Teste-de-Buch", "33550": "Cestas",
 }
-NOMS_COMMUNES_GIRONDE = {v: k for k, v in COMMUNES_GIRONDE.items()}
 
-# --- Fonction de chargement des données 2026 (via le lien Box) ---
 @st.cache_data(ttl=3600)
 def load_gironde_2026_data():
-    """
-    Charge les données DVF 2026 pour la Gironde
-    depuis le lien de téléchargement Box fourni par l'utilisateur
-    """
-    # Lien direct vers le fichier (edition 2026)
-    url = "https://euc1.boxcloud.com/d/1/a1!cfdBY_D0VOPJc6gdrcA3QM9x5JInLYadsDZDG3-ipQGuygd9H19f7N5M3MG1z5kVkw0jqzR80QzTr1IxGjZSjCQkegbiu9dGDyZKDTjQ2BZStXlPcoH-3LNiNDFoLqUBL3jX62QPuJ2n9O1Pr3lq6j-YpgOzlzBKfditcuJc7CQ1KdW7zKX7cWmFCtegSyDyvmunQfuzDcfJn_bZPS8gwSfHpkg1uTRkbcfYkLeSMiwD909m2NBmTmNh5YLt5dIgTidX4SjKbwhRTu6G1a1VLtpU1rY9OsEcbk_Zv2ziB6SxfmpWb6u2knsJXmRr7v5vKFzeYUYtJytDur0wGZ5Hbny0rjotdpWdYuhkK0VqjTDV2yltS2hDzyKw5fCG8XofVQGB6Kf3TjpXmiv1idDvZNtwUNJQGscJo_SCHzstEgvat20qLM7y56fVamODjp4az8lvN8GdcgtZgLXsKQMTV3S9zdQNwKQUGpbSLhoFa8-32HEGpEX5Rboi1hpfYXqLfSfv7nRjswX-KDVv4PzNZAHfLjdk4XujPqhfsullFr6502sZ1z8Eu1WBNg5zlxs8q43x8Md9Vx7MbasDOLzcTjJ792jay4ax4J43hZhr196jv9LShNaaBAUlg5vFN_bpr77ZKssdGfNqFZGQDpLur4jiOG7WQ1qTdeI05Q78gGwKOvkx41UI09eE8kLl6tZ1rD90WzmMmPZaCd2aqrVIM5reH2rXr8In4OwwKawGbM76I5H8QxaZZ1mgA3ZXyMZb7Li5cnFSF1IWK4gwayeDWEZnZO3LrTZJ9WU3McwKEVxeBVLuePlxFIDwnMQuRZvcoxJ0EZElJvdQtBlfM38Z3QyHY-KZ03M-a72PUXOasS4cyevwCzSi6sFl1VOwm4wz6wI7zLbCbfF9nruqqqmY-G0bTuN9MEuQeINEt4rPG-0U9IeTHjWLG-2k-UzLBmNi0Id9ykZmcTkY6CTrQ6leHrnxWg1LUw5he7nTSjEu-4kwRsRHUOPuZHyHGEELKlxO8wfVG86i6GxY_qnx8iKf7yYYmbrJKYT6CQ6q_33JwjAyKYyoD2KeeS9uJ1oVOyIu0NFCL5VcEi__d94B5mO_Sz4alj1hOpHWFvvp5bglaM7rBIIbd-pKOLGBXDgWcvPqVH1bFisH51AJsjuhnNx4-rakRbAl9AT3TVZnpDo8OUeVnlfzXBhfo_-BWUGKayPYkefh9jAowbQhJsyFXhKhmFmpeURAoYfFKhKxBBGXRpTq6ovZfRffPkAX5ysHBld46FN1XKttas0TLnPtezzYj7IKZv3geaewejyxNPle5NOEztHWnvUbSyqhBL4qWgaSaOxMuLA2KM6F0UBbyEguJJG3-4n8CzVH2nyoNWmuB4B2vNxXTKN6NpAoEpiufRT2hjAj_UGHu9CDOFWM2tKFoRV2wcQ./download"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    """Charge le fichier dvf_plus_d33.csv depuis le sous-dossier 1_DONNEES_LIVRAISON"""
+    # Chemins possibles
+    possible_paths = [
+        os.path.join("1_DONNEES_LIVRAISON", "dvf_plus_d33.csv"),
+        "dvf_plus_d33.csv",
+        os.path.join("..", "1_DONNEES_LIVRAISON", "dvf_plus_d33.csv")
+    ]
+    file_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            file_path = path
+            break
+    if file_path is None:
+        st.error("Fichier dvf_plus_d33.csv introuvable. Vérifiez le chemin.")
+        return pd.DataFrame()
 
     try:
-        with st.spinner("📥 Téléchargement des données DVF 2026 depuis le lien Box..."):
-            response = requests.get(url, headers=headers, stream=True, timeout=120)
-            response.raise_for_status()
-        
-        content = response.content
-        
-        # Tentative de lecture (gère automatiquement le gzip si présent)
-        with st.spinner("🔄 Décompression et traitement des données..."):
-            try:
-                # Si le fichier est compressé en gzip
-                with gzip.open(io.BytesIO(content), 'rt', encoding='utf-8') as f:
-                    df = pd.read_csv(f, sep=',', low_memory=False)
-            except gzip.BadGzipFile:
-                # Si le fichier est un CSV brut
-                df = pd.read_csv(io.BytesIO(content), sep=',', low_memory=False)
-            except Exception as e:
-                # Fallback : lecture avec pandas en mode texte
-                df = pd.read_csv(io.StringIO(content.decode('utf-8')), sep=',', low_memory=False)
-
+        with st.spinner(f"📂 Chargement du fichier {file_path}..."):
+            # Lecture des colonnes utiles
+            needed = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati',
+                      'type_local', 'code_commune', 'code_postal',
+                      'latitude', 'longitude', 'nombre_pieces_principales']
+            # On lit l'en-tête pour sélectionner les colonnes existantes
+            with open(file_path, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                header = first_line.strip().split(',')
+            use_cols = [c for c in needed if c in header]
+            if not use_cols:
+                st.error("Aucune colonne requise trouvée dans le fichier.")
+                return pd.DataFrame()
+            df = pd.read_csv(file_path, sep=',', usecols=use_cols, low_memory=False)
         if df.empty:
-            st.warning("Le fichier téléchargé est vide.")
             return pd.DataFrame()
-        
-        st.sidebar.success(f"✅ {len(df):,} transactions brutes chargées (source Box 2026)")
+        mem = round(df.memory_usage(deep=True).sum() / 1024**2, 1)
+        st.sidebar.success(f"✅ {len(df):,} transactions ({mem} Mo)")
         return df
-        
-    except requests.exceptions.HTTPError as e:
-        if response.status_code == 404:
-            st.error("🚫 Le lien de téléchargement Box est introuvable (404). Il a peut-être expiré.")
-            st.info("📂 Vous pouvez télécharger manuellement le fichier depuis le dossier Box et l'importer via le bouton ci-dessous.")
-        else:
-            st.error(f"Erreur HTTP : {e}")
-        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Erreur lors du chargement depuis Box : {e}")
-        st.info("📂 Vous pouvez télécharger manuellement le fichier et l'importer ci-dessous.")
+        st.error(f"Erreur de lecture : {e}")
         return pd.DataFrame()
 
-# --- Fonction de nettoyage et préparation (identique à la version 2025) ---
 def prepare_data(df):
     if df.empty:
-        return pd.DataFrame()
-    
+        return df
     df_clean = df.copy()
-    
     if 'date_mutation' in df_clean.columns:
-        df_clean["date_mutation"] = pd.to_datetime(df_clean["date_mutation"], 
-                                                   format='%Y-%m-%d', 
-                                                   errors='coerce')
-    
+        df_clean["date_mutation"] = pd.to_datetime(df_clean["date_mutation"], errors='coerce')
     if 'valeur_fonciere' in df_clean.columns:
-        df_clean["valeur_fonciere"] = pd.to_numeric(df_clean["valeur_fonciere"], 
-                                                    errors='coerce')
-    
+        df_clean["valeur_fonciere"] = pd.to_numeric(df_clean["valeur_fonciere"], errors='coerce')
     if 'surface_reelle_bati' in df_clean.columns:
-        df_clean["surface_reelle_bati"] = pd.to_numeric(df_clean["surface_reelle_bati"], 
-                                                       errors='coerce')
-    
+        df_clean["surface_reelle_bati"] = pd.to_numeric(df_clean["surface_reelle_bati"], errors='coerce')
     if 'type_local' in df_clean.columns:
         df_clean = df_clean[df_clean["type_local"].isin(['Maison', 'Appartement'])]
-    
-    critical_cols = [col for col in ['valeur_fonciere', 'surface_reelle_bati'] 
-                    if col in df_clean.columns]
-    if critical_cols:
-        df_clean = df_clean.dropna(subset=critical_cols)
-    
-    if 'valeur_fonciere' in df_clean.columns:
-        df_clean = df_clean[df_clean['valeur_fonciere'] > 20000]
-        df_clean = df_clean[df_clean['valeur_fonciere'] < 3000000]
-    
-    if 'surface_reelle_bati' in df_clean.columns:
-        df_clean = df_clean[df_clean['surface_reelle_bati'] > 9]
-        df_clean = df_clean[df_clean['surface_reelle_bati'] < 400]
-    
-    if 'valeur_fonciere' in df_clean.columns and 'surface_reelle_bati' in df_clean.columns:
-        df_clean['prix_m2'] = df_clean['valeur_fonciere'] / df_clean['surface_reelle_bati']
-        df_clean = df_clean[(df_clean['prix_m2'] > 500) & (df_clean['prix_m2'] < 12000)]
-    
+    df_clean = df_clean.dropna(subset=['valeur_fonciere', 'surface_reelle_bati'])
+    df_clean = df_clean[(df_clean['valeur_fonciere'] > 20000) & (df_clean['valeur_fonciere'] < 3000000)]
+    df_clean = df_clean[(df_clean['surface_reelle_bati'] > 9) & (df_clean['surface_reelle_bati'] < 400)]
+    df_clean['prix_m2'] = df_clean['valeur_fonciere'] / df_clean['surface_reelle_bati']
+    df_clean = df_clean[(df_clean['prix_m2'] > 500) & (df_clean['prix_m2'] < 12000)]
     if 'code_commune' in df_clean.columns:
         df_clean['code_commune'] = df_clean['code_commune'].astype(str).str.zfill(5)
         df_clean['nom_commune'] = df_clean['code_commune'].map(COMMUNES_GIRONDE)
         df_clean = df_clean.dropna(subset=['nom_commune'])
-    
     return df_clean
 
-# --- Interface Utilisateur ---
-st.title("🏘️ Dashboard Immobilier Gironde - Données 2026")
-st.markdown("*Source : DVF+ open-data (Cerema) via Box / data.gouv.fr*")
-st.markdown("Département de la Gironde (33) - Édition 2026")
+# --- Interface utilisateur ---
+st.title("🏘️ Dashboard Immobilier Gironde - 2026")
+st.markdown("Source : DVF+ (Cerema) – fichier local dvf_plus_d33.csv")
 
-# Chargement des données
 df_brut = load_gironde_2026_data()
-
-# Fallback : si le chargement direct échoue, proposer l'upload manuel
 if df_brut.empty:
-    st.info("💡 Le chargement automatique a échoué ou le lien a expiré.")
-    st.markdown("**Téléchargez le fichier CSV/CSV.gz depuis le dossier Box et importez-le manuellement :**")
-    
-    uploaded_file = st.file_uploader(
-        "Choisissez le fichier de données (CSV ou CSV.gz)",
-        type=['csv', 'gz']
-    )
-    
-    if uploaded_file is not None:
-        try:
-            content = uploaded_file.read()
-            # Tester si c'est du gzip
-            try:
-                with gzip.open(io.BytesIO(content), 'rt', encoding='utf-8') as f:
-                    df_brut = pd.read_csv(f, sep=',', low_memory=False)
-            except gzip.BadGzipFile:
-                df_brut = pd.read_csv(io.BytesIO(content), sep=',', low_memory=False)
-            
-            st.sidebar.success(f"✅ {len(df_brut):,} transactions chargées manuellement")
-        except Exception as e:
-            st.error(f"Erreur lors de la lecture du fichier : {e}")
-            st.stop()
-    else:
-        st.stop()
-else:
-    st.sidebar.success("✅ Données chargées depuis le lien Box")
-
-if df_brut.empty:
-    st.warning("Aucune donnée à traiter.")
+    st.info("Fichier introuvable ou erreur. Vérifiez que le fichier est présent.")
     st.stop()
 
-# Préparation des données
-with st.spinner("🧹 Nettoyage et préparation des données..."):
-    df = prepare_data(df_brut)
-
+df = prepare_data(df_brut)
 if df.empty:
-    st.warning("⚠️ Aucune transaction valide pour la Gironde après nettoyage.")
-    
-    with st.expander("🔍 Voir les colonnes disponibles dans le fichier source"):
-        st.write("Colonnes :", df_brut.columns.tolist())
-        if 'code_commune' in df_brut.columns:
-            st.write("Communes présentes dans les données brutes :")
-            communes_presentes = df_brut['code_commune'].astype(str).str[:5].unique()
-            st.write(sorted(communes_presentes)[:20])
+    st.warning("Aucune transaction valide après nettoyage.")
     st.stop()
 
-# --- Sélection de la commune ---
-st.sidebar.header("📍 Sélection de la commune")
-communes_disponibles = sorted(df['nom_commune'].unique())
-
-if not communes_disponibles:
-    st.error("Aucune commune trouvée.")
-    st.stop()
-
-selected_commune_name = st.sidebar.selectbox(
-    "Choisissez une commune :",
-    options=communes_disponibles,
-    index=communes_disponibles.index("Bordeaux") if "Bordeaux" in communes_disponibles else 0
-)
-
-df_commune = df[df['nom_commune'] == selected_commune_name].copy()
-
+# --- Sélection commune ---
+communes = sorted(df['nom_commune'].unique())
+selected = st.sidebar.selectbox("Commune", communes, index=communes.index("Bordeaux") if "Bordeaux" in communes else 0)
+df_commune = df[df['nom_commune'] == selected].copy()
 if df_commune.empty:
-    st.warning(f"Aucune donnée pour {selected_commune_name} en 2026")
     st.stop()
 
-# --- Filtres avancés ---
+# --- Filtres ---
 st.sidebar.header("🔧 Filtres")
-
 if 'code_postal' in df_commune.columns:
-    codes_postaux = sorted(df_commune['code_postal'].astype(str).unique())
-    code_postal_selection = st.sidebar.multiselect("Code postal", codes_postaux, default=codes_postaux)
+    cp_options = sorted(df_commune['code_postal'].astype(str).unique())
+    cp_selection = st.sidebar.multiselect("Code postal", cp_options, default=cp_options)
 else:
-    code_postal_selection = []
-
-if 'type_local' in df_commune.columns:
-    type_local_options = ['Tous', 'Maison', 'Appartement']
-    type_local = st.sidebar.selectbox("Type de bien", type_local_options)
-else:
-    type_local = 'Tous'
-
-prix_min = st.sidebar.number_input("Prix minimum (€)", value=0, step=20000, min_value=0)
-prix_max = st.sidebar.number_input("Prix maximum (€)", value=int(df_commune['valeur_fonciere'].max()), step=50000, min_value=0)
-surface_min = st.sidebar.slider("Surface minimum (m²)", min_value=0, max_value=int(df_commune['surface_reelle_bati'].max()), value=0)
+    cp_selection = []
+type_local = st.sidebar.selectbox("Type de bien", ['Tous', 'Maison', 'Appartement'])
+prix_min = st.sidebar.number_input("Prix min (€)", 0, step=20000)
+prix_max = st.sidebar.number_input("Prix max (€)", int(df_commune['valeur_fonciere'].max()), step=50000)
+surface_min = st.sidebar.slider("Surface min (m²)", 0, int(df_commune['surface_reelle_bati'].max()), 0)
 
 df_filtre = df_commune.copy()
-
-if code_postal_selection and 'code_postal' in df_filtre.columns:
-    df_filtre = df_filtre[df_filtre['code_postal'].astype(str).isin(code_postal_selection)]
-
+if cp_selection and 'code_postal' in df_filtre.columns:
+    df_filtre = df_filtre[df_filtre['code_postal'].astype(str).isin(cp_selection)]
 df_filtre = df_filtre[
-    (df_filtre['valeur_fonciere'] >= prix_min) & 
+    (df_filtre['valeur_fonciere'] >= prix_min) &
     (df_filtre['valeur_fonciere'] <= prix_max) &
     (df_filtre['surface_reelle_bati'] >= surface_min)
 ]
-
 if type_local != 'Tous' and 'type_local' in df_filtre.columns:
     df_filtre = df_filtre[df_filtre['type_local'] == type_local]
-
 if df_filtre.empty:
-    st.warning("Aucune transaction ne correspond à vos filtres.")
+    st.warning("Aucun résultat.")
     st.stop()
 
 # --- KPIs ---
-st.header(f"📊 Indicateurs Clés - {selected_commune_name} (2026)")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Prix moyen / m²", f"{df_filtre['prix_m2'].mean():,.0f} €")
+c2.metric("Prix médian", f"{df_filtre['valeur_fonciere'].median():,.0f} €")
+c3.metric("Transactions", f"{len(df_filtre):,}")
+c4.metric("Surface moyenne", f"{df_filtre['surface_reelle_bati'].mean():.0f} m²")
+if 'nombre_pieces_principales' in df_filtre.columns:
+    c5.metric("Pièces", f"{df_filtre['nombre_pieces_principales'].mean():.1f}")
 
-col1, col2, col3, col4, col5 = st.columns(5)
-
-with col1:
-    prix_m2_moyen = df_filtre['prix_m2'].mean()
-    st.metric("Prix moyen / m²", f"{prix_m2_moyen:,.0f} €")
-
-with col2:
-    prix_median = df_filtre['valeur_fonciere'].median()
-    st.metric("Prix médian", f"{prix_median:,.0f} €")
-
-with col3:
-    nb_transactions = len(df_filtre)
-    st.metric("Transactions", f"{nb_transactions:,}")
-
-with col4:
-    surface_moyenne = df_filtre['surface_reelle_bati'].mean()
-    st.metric("Surface moyenne", f"{surface_moyenne:.0f} m²")
-
-with col5:
-    if 'nombre_pieces_principales' in df_filtre.columns:
-        pieces_moyennes = df_filtre['nombre_pieces_principales'].mean()
-        st.metric("Pièces principales", f"{pieces_moyennes:.1f}")
-
-# --- Visualisations ---
-st.header(f"📈 Analyses - {selected_commune_name}")
-
+# --- Graphiques ---
 col1, col2 = st.columns(2)
-
 with col1:
-    st.subheader("Distribution des prix au m²")
-    fig = px.histogram(
-        df_filtre, 
-        x='prix_m2', 
-        nbins=40,
-        color='type_local' if 'type_local' in df_filtre.columns else None,
-        marginal="box",
-        title=f"Prix au m² - {selected_commune_name} (2026)",
-        labels={'prix_m2': 'Prix au m² (€)', 'count': 'Nombre de transactions'}
-    )
+    fig = px.histogram(df_filtre, x='prix_m2', nbins=40,
+                       color='type_local' if 'type_local' in df_filtre.columns else None,
+                       marginal='box')
     st.plotly_chart(fig, use_container_width=True)
-
 with col2:
-    st.subheader("Prix selon la surface")
-    fig = px.scatter(
-        df_filtre,
-        x='surface_reelle_bati',
-        y='valeur_fonciere',
-        color='type_local' if 'type_local' in df_filtre.columns else None,
-        hover_data=['code_postal'],
-        title="Corrélation surface / prix (2026)",
-        labels={
-            'surface_reelle_bati': 'Surface (m²)',
-            'valeur_fonciere': 'Prix (€)'
-        }
-    )
+    fig = px.scatter(df_filtre, x='surface_reelle_bati', y='valeur_fonciere',
+                     color='type_local' if 'type_local' in df_filtre.columns else None,
+                     hover_data=['code_postal'])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte ---
-st.subheader(f"🗺️ Carte des transactions - {selected_commune_name}")
+# --- Carte avec OpenStreetMap (rues visibles) ---
+st.subheader(f"🗺️ Carte des transactions - {selected} (2026)")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
-    df_carte = df_filtre.dropna(subset=['latitude', 'longitude'])
-    
+    df_carte = df_filtre.copy()
+    # Nettoyage des coordonnées
+    df_carte['latitude'] = pd.to_numeric(df_carte['latitude'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_carte['longitude'] = pd.to_numeric(df_carte['longitude'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
+
     if not df_carte.empty:
+        # Vérifier si les coordonnées sont en mètres (Lambert 93)
+        lat_min, lat_max = df_carte['latitude'].min(), df_carte['latitude'].max()
+        lon_min, lon_max = df_carte['longitude'].min(), df_carte['longitude'].max()
+
+        # Diagnostic
+        with st.expander("🔍 Diagnostic des coordonnées", expanded=False):
+            st.write(f"Latitude : min {lat_min:.4f}, max {lat_max:.4f}")
+            st.write(f"Longitude : min {lon_min:.4f}, max {lon_max:.4f}")
+            if lat_max > 90 or lat_min < -90 or lon_max > 180 or lon_min < -180:
+                st.warning("⚠️ Coordonnées en mètres (Lambert 93). Conversion automatique vers WGS84 pour les rues.")
+                if HAS_PYPROJ:
+                    try:
+                        lambert93 = pyproj.Proj('+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs')
+                        wgs84 = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+                        lon_vals = df_carte['longitude'].values
+                        lat_vals = df_carte['latitude'].values
+                        new_lon, new_lat = pyproj.transform(lambert93, wgs84, lon_vals, lat_vals)
+                        df_carte['longitude'] = new_lon
+                        df_carte['latitude'] = new_lat
+                        st.success("✅ Conversion effectuée. Les rues vont s'afficher.")
+                    except Exception as e:
+                        st.error(f"Erreur de conversion : {e}")
+                else:
+                    st.error("❌ pyproj non installé. Ajoutez 'pyproj' dans requirements.txt pour la conversion automatique.")
+
+        # Limiter le nombre de points
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
-            st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon aléatoire)")
-        
-        fig = px.scatter_mapbox(
-            df_carte,
-            lat="latitude",
-            lon="longitude",
-            color="prix_m2",
-            size="surface_reelle_bati",
-            hover_data={
-                "valeur_fonciere": ":.0f",
-                "type_local": True,
-                "surface_reelle_bati": ":.0f",
-                "prix_m2": ":.0f"
-            },
-            color_continuous_scale="RdYlGn_r",
-            size_max=15,
-            zoom=12,
-            mapbox_style="open-street-map",
-            title=f"Transactions à {selected_commune_name} (2026)"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon)")
+
+        # Création de la carte avec scatter_map (OSM pour les rues)
+        try:
+            fig = px.scatter_map(
+                df_carte,
+                lat="latitude",
+                lon="longitude",
+                color="prix_m2",
+                size="surface_reelle_bati",
+                hover_data={
+                    "valeur_fonciere": ":.0f",
+                    "type_local": True,
+                    "surface_reelle_bati": ":.0f",
+                    "prix_m2": ":.0f"
+                },
+                color_continuous_scale="Viridis",
+                size_max=15,
+                zoom=13,
+                map_style="open-street-map",
+                title=f"Transactions à {selected} (2026)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Erreur avec open-street-map : {e}")
+            st.warning("🔄 Tentative avec le style carto-positron (moins de détails mais plus stable)...")
+            try:
+                fig = px.scatter_map(
+                    df_carte,
+                    lat="latitude",
+                    lon="longitude",
+                    color="prix_m2",
+                    size="surface_reelle_bati",
+                    hover_data={
+                        "valeur_fonciere": ":.0f",
+                        "type_local": True,
+                        "surface_reelle_bati": ":.0f",
+                        "prix_m2": ":.0f"
+                    },
+                    color_continuous_scale="Viridis",
+                    size_max=15,
+                    zoom=13,
+                    map_style="carto-positron",
+                    title=f"Transactions à {selected} (fallback)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e2:
+                st.error(f"Erreur définitive : {e2}")
+                st.info("ℹ️ La carte ne peut pas s'afficher. Vérifiez votre connexion internet (tuiles OpenStreetMap) ou les coordonnées.")
     else:
-        st.info("📍 Données de géolocalisation non disponibles")
+        st.info("📍 Aucune coordonnée valide après nettoyage.")
+else:
+    st.info("📍 Colonnes latitude/longitude non disponibles dans les données.")
 
 # --- Évolution temporelle ---
-st.subheader(f"📅 Évolution des transactions - {selected_commune_name}")
-
 if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
     df_filtre['mois'] = df_filtre['date_mutation'].dt.to_period('M')
     df_mensuel = df_filtre.groupby('mois').agg({
         'prix_m2': 'mean',
         'valeur_fonciere': ['count', 'mean']
     }).round(0)
-    
     df_mensuel.columns = ['prix_m2_moyen', 'nb_transactions', 'prix_moyen']
     df_mensuel = df_mensuel.reset_index()
     df_mensuel['mois'] = df_mensuel['mois'].astype(str)
-    
     col1, col2 = st.columns(2)
-    
     with col1:
-        fig = px.line(
-            df_mensuel,
-            x='mois',
-            y='prix_m2_moyen',
-            title="Évolution du prix au m² (2026)",
-            markers=True
-        )
+        fig = px.line(df_mensuel, x='mois', y='prix_m2_moyen', markers=True)
         st.plotly_chart(fig, use_container_width=True)
-    
     with col2:
-        fig = px.bar(
-            df_mensuel,
-            x='mois',
-            y='nb_transactions',
-            title="Nombre de transactions par mois (2026)"
-        )
+        fig = px.bar(df_mensuel, x='mois', y='nb_transactions')
         st.plotly_chart(fig, use_container_width=True)
 
-# --- Top des ventes ---
-st.subheader("💰 Top 5 des ventes les plus élevées")
-top_ventes = df_filtre.nlargest(5, 'valeur_fonciere')[
-    ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']
-]
-if not top_ventes.empty:
-    top_ventes['valeur_fonciere'] = top_ventes['valeur_fonciere'].apply(lambda x: f"{x:,.0f} €")
-    top_ventes['prix_m2'] = top_ventes['prix_m2'].apply(lambda x: f"{x:,.0f} €/m²")
-    st.dataframe(top_ventes, use_container_width=True, hide_index=True)
+# --- Top ventes ---
+st.subheader("💰 Top 5 des ventes")
+top = df_filtre.nlargest(5, 'valeur_fonciere')[['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']]
+if not top.empty:
+    top['valeur_fonciere'] = top['valeur_fonciere'].apply(lambda x: f"{x:,.0f} €")
+    top['prix_m2'] = top['prix_m2'].apply(lambda x: f"{x:,.0f} €/m²")
+    st.dataframe(top, hide_index=True, use_container_width=True)
 
 st.subheader("📋 Dernières transactions")
-df_display = df_filtre.sort_values('date_mutation', ascending=False).head(50)
+display = df_filtre.sort_values('date_mutation', ascending=False).head(50)
+display_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']
+available = [c for c in display_cols if c in display.columns]
+for c in ['valeur_fonciere', 'prix_m2']:
+    if c in display.columns:
+        display[c] = display[c].apply(lambda x: f"{x:,.0f} €" + ("/m²" if c == 'prix_m2' else ""))
+st.dataframe(display[available], hide_index=True, use_container_width=True)
 
-display_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 
-                'prix_m2', 'type_local', 'code_postal']
-available_cols = [col for col in display_cols if col in df_display.columns]
-
-if available_cols:
-    for col in ['valeur_fonciere', 'prix_m2']:
-        if col in df_display.columns:
-            df_display[col] = df_display[col].apply(
-                lambda x: f"{x:,.0f} €" + ("/m²" if col == 'prix_m2' else "")
-            )
-    
-    st.dataframe(df_display[available_cols], use_container_width=True, hide_index=True)
-
-# --- Pied de page ---
 st.markdown("---")
-st.markdown(
-    f"""
-    <div style='text-align: center; color: grey; padding: 10px;'>
-        <b>Source :</b> DVF+ open-data (Cerema) / Box - Édition 2026 - Gironde (33)<br>
-        <b>Données :</b> {len(df_filtre):,} transactions affichées sur {len(df_commune):,} pour {selected_commune_name}<br>
-        <b>Mise à jour :</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.caption(f"Mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')} – DVF+ 2026 Gironde (33)")
