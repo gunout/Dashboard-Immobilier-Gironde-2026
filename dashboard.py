@@ -1,4 +1,3 @@
-
 # dashboard.py – Version définitive pour DVF+ 2026
 import streamlit as st
 import pandas as pd
@@ -36,13 +35,11 @@ def load_data():
             response = requests.get(DATA_URL, timeout=60)
             response.raise_for_status()
 
-        # Vérifier qu'on n'a pas une page HTML (erreur GitHub)
         content_type = response.headers.get('content-type', '')
         if 'text/html' in content_type:
             st.error("❌ Le lien renvoie une page HTML. Vérifiez que la release est publique.")
             return None
 
-        # Lecture directe avec séparateur '|'
         df = pd.read_csv(
             io.StringIO(response.text),
             sep='|',
@@ -55,7 +52,6 @@ def load_data():
             st.warning("Le fichier est vide.")
             return None
 
-        # Affichage des colonnes dans la barre latérale (diagnostic)
         with st.sidebar:
             st.write("**Colonnes trouvées :**", list(df.columns))
             st.write(f"**Nombre de lignes :** {len(df):,}")
@@ -97,7 +93,7 @@ def prepare_data(df):
         st.error(f"Colonnes disponibles : {list(d.columns)}")
         return None
 
-    # ✅ CONVERSION DATE EN DATETIME (CORRECTION PRINCIPALE)
+    # --- Conversion date en datetime ---
     if 'date_mutation' in d.columns:
         d['date_mutation'] = pd.to_datetime(d['date_mutation'], errors='coerce')
 
@@ -109,7 +105,7 @@ def prepare_data(df):
     if 'type_local' in d.columns:
         d = d[d['type_local'].isin(['Maison', 'Appartement'])]
 
-    # --- Suppression des NA sur les colonnes critiques ---
+    # --- Suppression des NA ---
     d = d.dropna(subset=['valeur_fonciere', 'surface_reelle_bati'])
 
     # --- Filtres de cohérence ---
@@ -159,7 +155,7 @@ def prepare_data(df):
                  'prix_m2', 'nom_commune']
     keep_cols = [c for c in keep_cols if c in d.columns]
     if keep_cols:
-        d = d[keep_cols].copy()  # ✅ .copy() pour éviter SettingWithCopyWarning
+        d = d[keep_cols].copy()
 
     st.sidebar.success(f"✅ {len(d):,} transactions après nettoyage")
     return d
@@ -187,7 +183,7 @@ selected = st.sidebar.selectbox(
     communes,
     index=communes.index("Bordeaux") if "Bordeaux" in communes else 0
 )
-df_commune = df[df['nom_commune'] == selected].copy()  # ✅ .copy()
+df_commune = df[df['nom_commune'] == selected].copy()
 if df_commune.empty:
     st.warning(f"Aucune donnée pour {selected}")
     st.stop()
@@ -215,7 +211,7 @@ surface_min = st.sidebar.slider(
     value=0
 )
 
-df_filtre = df_commune.copy()  # ✅ .copy()
+df_filtre = df_commune.copy()
 if cp_selection and 'code_postal' in df_filtre.columns:
     df_filtre = df_filtre[df_filtre['code_postal'].astype(str).isin(cp_selection)].copy()
 df_filtre = df_filtre[
@@ -262,7 +258,7 @@ with col2:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte avec OpenStreetMap ---
+# --- Carte avec st.map (OpenStreetMap intégré) ---
 st.subheader(f"🗺️ Carte des transactions – {selected} (2026)")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
@@ -279,56 +275,46 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
             st.write(f"Latitude : {lat_min:.4f} – {lat_max:.4f}")
             st.write(f"Longitude : {lon_min:.4f} – {lon_max:.4f}")
             if lat_max > 90 or lat_min < -90 or lon_max > 180 or lon_min < -180:
-                st.warning("⚠️ Les coordonnées semblent être en mètres (Lambert). Affichage approximatif.")
+                st.warning("⚠️ Les coordonnées semblent être en mètres (Lambert). La carte ne sera pas correcte.")
 
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500, random_state=42)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon aléatoire)")
 
+        # ✅ CORRECTION : Utilisation de st.map() au lieu de px.scatter_map()
         try:
-            fig = px.scatter_map(
+            st.map(
                 df_carte,
-                lat="latitude",
-                lon="longitude",
-                color="prix_m2",
-                size="surface_reelle_bati",
-                hover_data={
-                    "valeur_fonciere": ":.0f",
-                    "type_local": True,
-                    "surface_reelle_bati": ":.0f",
-                    "prix_m2": ":.0f"
-                },
-                color_continuous_scale="Viridis",
-                size_max=15,
-                zoom=13,
-                map_style="open-street-map",
-                title=f"Transactions à {selected} (2026)"
+                latitude='latitude',
+                longitude='longitude',
+                size='surface_reelle_bati',
+                color='prix_m2',
+                use_container_width=True
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.caption("🗺️ Carte OpenStreetMap via st.map()")
         except Exception as e:
-            st.warning(f"⚠️ Erreur avec OpenStreetMap : {e}")
+            st.warning(f"⚠️ Erreur avec st.map() : {e}")
+            # Alternative avec px.scatter_geo
             try:
-                fig = px.scatter_map(
+                fig = px.scatter_geo(
                     df_carte,
-                    lat="latitude",
-                    lon="longitude",
-                    color="prix_m2",
-                    size="surface_reelle_bati",
+                    lat='latitude',
+                    lon='longitude',
+                    color='prix_m2',
+                    size='surface_reelle_bati',
                     hover_data={
-                        "valeur_fonciere": ":.0f",
-                        "type_local": True,
-                        "surface_reelle_bati": ":.0f",
-                        "prix_m2": ":.0f"
+                        'valeur_fonciere': ':.0f',
+                        'type_local': True,
+                        'surface_reelle_bati': ':.0f',
+                        'prix_m2': ':.0f'
                     },
-                    color_continuous_scale="Viridis",
+                    color_continuous_scale='Viridis',
                     size_max=15,
-                    zoom=13,
-                    map_style="carto-positron",
-                    title=f"Transactions à {selected} (fallback)"
+                    title=f"Transactions à {selected} (geo)"
                 )
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e2:
-                st.error(f"❌ Erreur définitive : {e2}")
+                st.error(f"❌ Erreur carte : {e2}")
     else:
         st.info("📍 Aucune coordonnée valide pour la carte.")
 else:
@@ -336,7 +322,6 @@ else:
 
 # --- Évolution temporelle ---
 if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
-    # ✅ Vérification que date_mutation est bien datetime
     if pd.api.types.is_datetime64_any_dtype(df_filtre['date_mutation']):
         df_temp = df_filtre.dropna(subset=['date_mutation']).copy()
         df_temp['mois'] = df_temp['date_mutation'].dt.to_period('M')
@@ -374,7 +359,7 @@ st.subheader("💰 Top 5 des ventes les plus élevées")
 top_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']
 available_top = [c for c in top_cols if c in df_filtre.columns]
 if available_top:
-    top_ventes = df_filtre.nlargest(5, 'valeur_fonciere')[available_top].copy()  # ✅ .copy()
+    top_ventes = df_filtre.nlargest(5, 'valeur_fonciere')[available_top].copy()
     top_ventes['valeur_fonciere'] = top_ventes['valeur_fonciere'].apply(lambda x: f"{x:,.0f} €")
     top_ventes['prix_m2'] = top_ventes['prix_m2'].apply(lambda x: f"{x:,.0f} €/m²")
     st.dataframe(top_ventes, hide_index=True, use_container_width=True)
@@ -384,7 +369,7 @@ st.subheader("📋 Dernières transactions")
 display_cols = ['date_mutation', 'valeur_fonciere', 'surface_reelle_bati', 'prix_m2', 'type_local', 'code_postal']
 available_display = [c for c in display_cols if c in df_filtre.columns]
 if available_display:
-    display = df_filtre.sort_values('date_mutation', ascending=False).head(50).copy()  # ✅ .copy()
+    display = df_filtre.sort_values('date_mutation', ascending=False).head(50).copy()
     for c in ['valeur_fonciere', 'prix_m2']:
         if c in display.columns:
             display[c] = display[c].apply(lambda x: f"{x:,.0f} €" + ("/m²" if c == 'prix_m2' else ""))
