@@ -133,22 +133,21 @@ COMMUNES_GIRONDE = {
 }
 NOMS_COMMUNES = {v: k for k, v in COMMUNES_GIRONDE.items()}
 
-# ---------- CONVERSION LAMBERT93 → WGS84 ----------
-# Utilise pyproj si disponible, sinon une formule approchée (moins précise)
+# ---------- CONVERSION LAMBERT93 → WGS84 (optimisée) ----------
+# On essaie d'importer pyproj, sinon on utilise une approximation vectorisée
 try:
     import pyproj
-    LAMBERT93 = pyproj.Proj(init='EPSG:2154')  # Lambert 93
-    WGS84 = pyproj.Proj(init='EPSG:4326')
-    def lambert93_to_wgs84(x, y):
-        lon, lat = pyproj.transform(LAMBERT93, WGS84, x, y)
+    transformer = pyproj.Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
+    def lambert_to_wgs84(x_vals, y_vals):
+        # x_vals, y_vals sont des tableaux numpy
+        lon, lat = transformer.transform(x_vals, y_vals)
         return lat, lon
 except ImportError:
-    # Approximation simplifiée pour la France métropolitaine (moins précise)
-    def lambert93_to_wgs84(x, y):
-        # Conversion approchée (ne pas utiliser pour des mesures précises)
-        # Valeurs moyennes pour la Gironde
-        lat = 44.5 + (y - 6500000) / 111000
-        lon = -0.5 + (x - 500000) / 82000
+    # Approximation vectorisée (utilisable pour la France)
+    def lambert_to_wgs84(x_vals, y_vals):
+        # Coefficients approximatifs pour la Gironde
+        lat = 44.5 + (y_vals - 6500000) / 111000
+        lon = -0.5 + (x_vals - 500000) / 82000
         return lat, lon
 
 # ---------- DATA LOADING (cached) ----------
@@ -159,35 +158,37 @@ def load_all_data():
         return pd.DataFrame()
     
     try:
-        # Lecture avec séparateur '|'
-        try:
-            df = pd.read_csv(
-                DATA_FILE,
-                sep='|',
-                low_memory=False,
-                on_bad_lines='skip',
-                encoding='utf-8',
-                quotechar='"'
-            )
-        except TypeError:
-            df = pd.read_csv(
-                DATA_FILE,
-                sep='|',
-                low_memory=False,
-                error_bad_lines=False,
-                warn_bad_lines=True,
-                encoding='utf-8',
-                quotechar='"'
-            )
-        except Exception:
-            df = pd.read_csv(
-                DATA_FILE,
-                sep='|',
-                low_memory=False,
-                on_bad_lines='skip',
-                encoding='latin1',
-                quotechar='"'
-            )
+        # Lecture avec séparateur '|' - on utilise un sous-échantillon pour accélérer le développement ?
+        # Mais on garde tout.
+        with st.spinner("Lecture du fichier CSV..."):
+            try:
+                df = pd.read_csv(
+                    DATA_FILE,
+                    sep='|',
+                    low_memory=False,
+                    on_bad_lines='skip',
+                    encoding='utf-8',
+                    quotechar='"'
+                )
+            except TypeError:
+                df = pd.read_csv(
+                    DATA_FILE,
+                    sep='|',
+                    low_memory=False,
+                    error_bad_lines=False,
+                    warn_bad_lines=True,
+                    encoding='utf-8',
+                    quotechar='"'
+                )
+            except Exception:
+                df = pd.read_csv(
+                    DATA_FILE,
+                    sep='|',
+                    low_memory=False,
+                    on_bad_lines='skip',
+                    encoding='latin1',
+                    quotechar='"'
+                )
         
         if df.empty:
             st.warning("Le fichier est vide ou n'a pas pu être lu.")
@@ -215,39 +216,43 @@ def load_all_data():
             return pd.DataFrame()
         
         # Nettoyage
-        df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
-        df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
-        df["surface_reelle_bati"] = pd.to_numeric(df["surface_reelle_bati"], errors='coerce')
-        df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
-        df = df[df["surface_reelle_bati"] > 0]
+        with st.spinner("Nettoyage des données..."):
+            df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
+            df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
+            df["surface_reelle_bati"] = pd.to_numeric(df["surface_reelle_bati"], errors='coerce')
+            df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
+            df = df[df["surface_reelle_bati"] > 0]
         
         if df.empty:
             st.warning("Aucune transaction valide après nettoyage.")
             return pd.DataFrame()
         
         # Type de bien
-        if "type_libelle" in df.columns:
-            def extraire_type(lib):
-                if pd.isna(lib):
+        with st.spinner("Filtrage des types de biens..."):
+            if "type_libelle" in df.columns:
+                def extraire_type(lib):
+                    if pd.isna(lib):
+                        return "Autre"
+                    lib = lib.upper()
+                    if "MAISON" in lib:
+                        return "Maison"
+                    elif "APPARTEMENT" in lib:
+                        return "Appartement"
                     return "Autre"
-                lib = lib.upper()
-                if "MAISON" in lib:
-                    return "Maison"
-                elif "APPARTEMENT" in lib:
-                    return "Appartement"
-                return "Autre"
-            df["type_local"] = df["type_libelle"].apply(extraire_type)
-            df = df[df["type_local"].isin(["Maison", "Appartement"])]
-        else:
-            if "codtypbien" in df.columns:
-                df = df[df["codtypbien"].isin([111, 121])]
-                df["type_local"] = df["codtypbien"].apply(lambda x: "Maison" if x == 111 else "Appartement")
+                df["type_local"] = df["type_libelle"].apply(extraire_type)
+                df = df[df["type_local"].isin(["Maison", "Appartement"])]
             else:
-                df["type_local"] = "Inconnu"
+                if "codtypbien" in df.columns:
+                    df = df[df["codtypbien"].isin([111, 121])]
+                    df["type_local"] = df["codtypbien"].apply(lambda x: "Maison" if x == 111 else "Appartement")
+                else:
+                    df["type_local"] = "Inconnu"
         
         # Prix au m² et filtrage
-        df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
-        df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
+        with st.spinner("Calcul du prix au m²..."):
+            df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
+            df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
+        
         if df.empty:
             st.warning("Aucune donnée dans les plages de prix au m².")
             return pd.DataFrame()
@@ -255,27 +260,21 @@ def load_all_data():
         # Code commune
         df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
         
-        # Conversion des coordonnées Lambert → WGS84
-        if 'x_lambert' in df.columns and 'y_lambert' in df.columns:
-            df['x_lambert'] = pd.to_numeric(df['x_lambert'], errors='coerce')
-            df['y_lambert'] = pd.to_numeric(df['y_lambert'], errors='coerce')
-            # Appliquer la conversion
-            lats = []
-            lons = []
-            for x, y in zip(df['x_lambert'], df['y_lambert']):
-                if pd.notna(x) and pd.notna(y):
-                    lat, lon = lambert93_to_wgs84(x, y)
-                    lats.append(lat)
-                    lons.append(lon)
-                else:
-                    lats.append(None)
-                    lons.append(None)
-            df['latitude'] = lats
-            df['longitude'] = lons
-        else:
-            # Si pas de coordonnées, on crée des colonnes vides
-            df['latitude'] = None
-            df['longitude'] = None
+        # Conversion des coordonnées (vectorisée)
+        with st.spinner("Conversion des coordonnées Lambert -> WGS84..."):
+            if 'x_lambert' in df.columns and 'y_lambert' in df.columns:
+                x = pd.to_numeric(df['x_lambert'], errors='coerce').values
+                y = pd.to_numeric(df['y_lambert'], errors='coerce').values
+                # Filtrer les valeurs valides
+                mask = ~np.isnan(x) & ~np.isnan(y)
+                if np.any(mask):
+                    lat, lon = lambert_to_wgs84(x[mask], y[mask])
+                    df.loc[mask, 'latitude'] = lat
+                    df.loc[mask, 'longitude'] = lon
+                # Les autres restent NaN
+            else:
+                df['latitude'] = np.nan
+                df['longitude'] = np.nan
         
         st.success(f"Données chargées : {len(df):,} transactions (Maisons + Appartements).")
         return df
@@ -310,9 +309,7 @@ if df.empty:
 
 # Filtres
 st.sidebar.header("Filtres")
-
-# Code postal – absent, on le désactive
-# On ne propose pas de filtre postal car la colonne n'existe pas
+# Pas de code postal
 
 types_dispo = ["Tous"] + sorted(df["type_local"].unique())
 type_local = st.sidebar.selectbox("Type", types_dispo)
@@ -371,9 +368,9 @@ st.subheader(f"Carte des transactions - {selected_commune_name}")
 if 'latitude' in df.columns and 'longitude' in df.columns:
     map_data = df[['latitude', 'longitude', 'prix_m2', 'surface_reelle_bati', 'valeur_fonciere', 'date_mutation']].copy()
     map_data = map_data.dropna(subset=['latitude', 'longitude'])
-    # Vérifier que les valeurs sont dans des plages plausibles
+    # Vérifier que les valeurs sont dans des plages plausibles (France métropolitaine)
     map_data = map_data[
-        (map_data['latitude'].between(42, 52)) &   # France métropolitaine
+        (map_data['latitude'].between(42, 52)) &
         (map_data['longitude'].between(-5, 10))
     ]
     if not map_data.empty:
