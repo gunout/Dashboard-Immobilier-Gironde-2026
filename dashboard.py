@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# ---------- DATA DOWNLOAD (if missing) ----------
+# ---------- DATA DOWNLOAD ----------
 DATA_URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/releases/download/DVF-33/dvf_plus_d33.csv"
 DATA_FILE = "dvf_plus_d33.csv"
 
@@ -140,8 +140,7 @@ def load_all_data():
         return pd.DataFrame()
     
     try:
-        # Lecture avec gestion des lignes mal formées
-        # On essaie d'abord avec on_bad_lines='skip' (pandas >= 1.3.0)
+        # Lecture robuste du CSV
         try:
             df = pd.read_csv(
                 DATA_FILE,
@@ -152,7 +151,6 @@ def load_all_data():
                 quotechar='"'
             )
         except TypeError:
-            # Fallback pour pandas < 1.3.0
             df = pd.read_csv(
                 DATA_FILE,
                 sep=',',
@@ -163,12 +161,11 @@ def load_all_data():
                 quotechar='"'
             )
         except Exception:
-            # Si l'encodage UTF-8 échoue, on tente latin1
             df = pd.read_csv(
                 DATA_FILE,
                 sep=',',
                 low_memory=False,
-                on_bad_lines='skip' if hasattr(pd, 'on_bad_lines') else 'skip',
+                on_bad_lines='skip',
                 encoding='latin1',
                 quotechar='"'
             )
@@ -177,52 +174,77 @@ def load_all_data():
             st.warning("Le fichier est vide ou n'a pas pu être lu.")
             return pd.DataFrame()
         
-        # --- Nettoyage ---
+        # --- AFFICHAGE DES COLONNES POUR DIAGNOSTIC (dans un expander plus tard) ---
+        # On stocke les noms de colonnes dans une variable pour diagnostic
+        colonnes = list(df.columns)
+        
+        # --- RECHERCHE ET RENOMMAGE DES COLONNES ESSENTIELLES ---
+        # Mapping des noms possibles -> noms standard
+        mapping = {
+            'valeur_fonciere': ['valeur_fonciere', 'valeur_foncier', 'valeur', 'prix', 'montant'],
+            'surface_reelle_bati': ['surface_reelle_bati', 'surface', 'surface_bati', 'surface_habitable'],
+            'date_mutation': ['date_mutation', 'date', 'date_acte', 'date_mut'],
+            'code_commune': ['code_commune', 'l_codinsee', 'codgeo', 'commune_code'],
+            'type_local': ['type_local', 'libtypbien', 'type', 'nature'],
+            'code_postal': ['code_postal', 'cp', 'codepostal'],
+            'latitude': ['latitude', 'lat', 'y'],
+            'longitude': ['longitude', 'long', 'x']
+        }
+        
+        rename_dict = {}
+        for standard, variants in mapping.items():
+            for var in variants:
+                if var in df.columns:
+                    rename_dict[var] = standard
+                    break  # on prend la première trouvée
+        
+        # Appliquer le renommage
+        if rename_dict:
+            df.rename(columns=rename_dict, inplace=True)
+        
+        # Vérification des colonnes obligatoires
+        required = ['valeur_fonciere', 'surface_reelle_bati', 'date_mutation', 'code_commune']
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            st.error(f"Colonnes manquantes : {missing}. Colonnes disponibles : {colonnes}")
+            return pd.DataFrame()
+        
+        # --- NETTOYAGE ---
         # Dates
-        if "date_mutation" in df.columns:
-            df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
+        df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
         
         # Numériques
-        for col in ["valeur_fonciere", "surface_reelle_bati"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Filtrage des types de biens
-        if "type_local" in df.columns:
-            df = df[df["type_local"].isin(['Maison', 'Appartement'])]
-        elif "libtypbien" in df.columns:
-            df = df[df["libtypbien"].str.contains("MAISON|APPARTEMENT", case=False, na=False)]
+        df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
+        df["surface_reelle_bati"] = pd.to_numeric(df["surface_reelle_bati"], errors='coerce')
         
         # Suppression des lignes avec valeurs manquantes critiques
         df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
         if df.empty:
-            st.warning("Aucune transaction valide après nettoyage.")
+            st.warning("Aucune transaction valide après nettoyage (valeurs manquantes).")
             return pd.DataFrame()
+        
+        # Filtrage des types de biens (Maison / Appartement)
+        if "type_local" in df.columns:
+            df = df[df["type_local"].isin(['Maison', 'Appartement'])]
+        # Si type_local n'existe pas, on essaie de filtrer via libtypbien (déjà renommé)
+        # mais on a déjà renommé, donc si type_local existe, on a fait le filtre.
         
         # Prix au m²
         df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
         df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
         if df.empty:
-            st.warning("Aucune donnée dans les plages de prix au m².")
+            st.warning("Aucune donnée dans les plages de prix au m² (200-15000).")
             return pd.DataFrame()
         
-        # Code commune
-        code_col = None
-        for col in ["code_commune", "l_codinsee"]:
-            if col in df.columns:
-                code_col = col
-                break
-        if code_col is None:
-            st.error("Colonne de code commune introuvable.")
-            return pd.DataFrame()
-        df["code_commune"] = df[code_col].astype(str).str.zfill(5)
+        # Code commune : s'assurer qu'il est en string et format 5 chiffres
+        df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
         
         # Coordonnées
         for col in ["latitude", "longitude"]:
-            if col not in df.columns:
-                df[col] = None
-            else:
+            if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
+            else:
+                df[col] = None  # colonne vide
         
         st.success(f"Données chargées : {len(df):,} transactions.")
         return df
@@ -245,10 +267,11 @@ with st.spinner("Chargement des données..."):
 if all_data.empty:
     st.stop()
 
-# Vérification de la présence de la commune
+# Diagnostic : afficher les colonnes disponibles dans l'expander
 with st.sidebar.expander("Diagnostic"):
     st.write(f"Code recherché : {selected_insee_code}")
     st.write(f"Trouvé : {'OUI' if selected_insee_code in all_data['code_commune'].values else 'NON'}")
+    st.write("Colonnes disponibles :", list(all_data.columns))
 
 # Filtrer par commune
 df = all_data[all_data['code_commune'] == selected_insee_code].copy()
