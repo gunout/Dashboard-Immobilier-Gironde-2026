@@ -16,9 +16,21 @@ st.set_page_config(
 # ---------- DATA DOWNLOAD ----------
 DATA_URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/releases/download/DVF-33/dvf_plus_d33.csv"
 DATA_FILE = "dvf_plus_d33.csv"
-CACHE_PARQUET = "dvf_clean.parquet"  # pour stocker une version nettoyée et compressée
+CACHE_PARQUET = "dvf_clean.parquet"
 
-# ---------- COMMUNES DICTIONARY (inchangé) ----------
+if not os.path.exists(DATA_FILE):
+    with st.spinner(f"Téléchargement de {DATA_FILE}..."):
+        try:
+            r = requests.get(DATA_URL, stream=True)
+            with open(DATA_FILE, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            st.success("Fichier téléchargé avec succès.")
+        except Exception as e:
+            st.error(f"Impossible de télécharger le fichier : {e}")
+            st.stop()
+
+# ---------- COMMUNES DICTIONARY ----------
 COMMUNES_GIRONDE = {
     "33063": "Bordeaux",
     "33039": "Bègles",
@@ -138,27 +150,19 @@ except ImportError:
 # ---------- DATA LOADING OPTIMISÉE ----------
 @st.cache_data
 def load_all_data():
-    # Si un fichier Parquet nettoyé existe déjà, on le charge (beaucoup plus rapide)
     if os.path.exists(CACHE_PARQUET):
         with st.spinner("Chargement des données optimisées..."):
             df = pd.read_parquet(CACHE_PARQUET)
-        st.success(f"Données chargées : {len(df):,} transactions (depuis cache Parquet).")
+        st.success(f"Données chargées : {len(df):,} transactions (cache Parquet).")
         return df
 
-    # Sinon, on lit le CSV en ne gardant que les colonnes utiles
     if not os.path.exists(DATA_FILE):
         st.error(f"Fichier {DATA_FILE} introuvable.")
         return pd.DataFrame()
     
-    # Colonnes nécessaires
-    usecols = [
-        'datemut', 'valeurfonc', 'sbati', 'l_codinsee',
-        'libtypbien', 'geompar_x', 'geompar_y', 'codtypbien'
-    ]
-    
+    usecols = ['datemut', 'valeurfonc', 'sbati', 'l_codinsee', 'libtypbien', 'geompar_x', 'geompar_y', 'codtypbien']
     try:
-        with st.spinner("Lecture du fichier CSV (optimisée)..."):
-            # On ne lit que les colonnes utiles
+        with st.spinner("Lecture du CSV (colonnes utiles seulement)..."):
             df = pd.read_csv(
                 DATA_FILE,
                 sep='|',
@@ -173,10 +177,9 @@ def load_all_data():
         return pd.DataFrame()
     
     if df.empty:
-        st.warning("Le fichier est vide ou n'a pas pu être lu.")
+        st.warning("Fichier vide ou illisible.")
         return pd.DataFrame()
     
-    # Renommage
     df.rename(columns={
         'datemut': 'date_mutation',
         'valeurfonc': 'valeur_fonciere',
@@ -187,7 +190,6 @@ def load_all_data():
         'geompar_y': 'y_lambert'
     }, inplace=True)
     
-    # Nettoyage rapide
     with st.spinner("Nettoyage des données..."):
         df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
         df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
@@ -196,10 +198,9 @@ def load_all_data():
         df = df[df["surface_reelle_bati"] > 0]
     
     if df.empty:
-        st.warning("Aucune transaction valide après nettoyage.")
+        st.warning("Aucune transaction valide.")
         return pd.DataFrame()
     
-    # Type de bien
     with st.spinner("Filtrage des types de biens..."):
         if "type_libelle" in df.columns:
             def extraire_type(lib):
@@ -220,7 +221,6 @@ def load_all_data():
             else:
                 df["type_local"] = "Inconnu"
     
-    # Prix au m²
     with st.spinner("Calcul du prix au m²..."):
         df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
         df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
@@ -231,8 +231,7 @@ def load_all_data():
     
     df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
     
-    # Conversion des coordonnées (vectorisée)
-    with st.spinner("Conversion des coordonnées Lambert -> WGS84..."):
+    with st.spinner("Conversion des coordonnées..."):
         if 'x_lambert' in df.columns and 'y_lambert' in df.columns:
             x = pd.to_numeric(df['x_lambert'], errors='coerce').values
             y = pd.to_numeric(df['y_lambert'], errors='coerce').values
@@ -245,14 +244,13 @@ def load_all_data():
             df['latitude'] = np.nan
             df['longitude'] = np.nan
     
-    # On supprime les colonnes inutiles pour gagner de la place
+    # Nettoyage final
     df.drop(columns=['x_lambert', 'y_lambert', 'type_libelle', 'codtypbien'], errors='ignore', inplace=True)
     
-    # Sauvegarde en Parquet pour les prochains chargements
-    with st.spinner("Sauvegarde du cache optimisé..."):
+    with st.spinner("Sauvegarde du cache Parquet..."):
         df.to_parquet(CACHE_PARQUET, compression='snappy')
     
-    st.success(f"Données chargées : {len(df):,} transactions (Maisons + Appartements).")
+    st.success(f"Données chargées : {len(df):,} transactions.")
     return df
 
 # ---------- UI ----------
@@ -334,7 +332,7 @@ with col2:
     else:
         st.info("Pas de répartition par type (un seul type présent).")
 
-# ---------- CARTE ----------
+# ---------- CARTE AVEC FALLBACK ----------
 st.subheader(f"Carte des transactions - {selected_commune_name}")
 
 if 'latitude' in df.columns and 'longitude' in df.columns:
@@ -348,30 +346,43 @@ if 'latitude' in df.columns and 'longitude' in df.columns:
         sample_size = min(2000, len(map_data))
         map_sample = map_data.sample(n=sample_size, random_state=42)
         
-        # Créer une colonne pour le hover_name
-        map_sample['hover_label'] = map_sample.index.astype(str)
+        # Nettoyer les infinis et NaN
+        for col in ['prix_m2', 'surface_reelle_bati', 'valeur_fonciere']:
+            map_sample[col] = map_sample[col].replace([np.inf, -np.inf], np.nan)
+            map_sample = map_sample.dropna(subset=[col])
         
-        fig_map = px.scatter_mapbox(
-            map_sample,
-            lat="latitude",
-            lon="longitude",
-            color="prix_m2",
-            size="surface_reelle_bati",
-            hover_name="hover_label",
-            hover_data={
-                "prix_m2": ":.0f",
-                "valeur_fonciere": ":.0f",
-                "surface_reelle_bati": ":.0f",
-                "date_mutation": True
-            },
-            color_continuous_scale="Viridis",
-            size_max=15,
-            zoom=12,
-            title="Carte des transactions (prix/m² en couleur, taille = surface)"
-        )
-        fig_map.update_layout(mapbox_style="open-street-map")
-        fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
-        st.plotly_chart(fig_map, use_container_width=True)
+        # Convertir date en string
+        map_sample['date_mutation_str'] = map_sample['date_mutation'].dt.strftime('%d/%m/%Y')
+        
+        if not map_sample.empty:
+            try:
+                # Tentative avec Plotly
+                fig_map = px.scatter_mapbox(
+                    map_sample,
+                    lat="latitude",
+                    lon="longitude",
+                    color="prix_m2",
+                    size="surface_reelle_bati",
+                    hover_data={
+                        "prix_m2": ":.0f",
+                        "valeur_fonciere": ":.0f",
+                        "surface_reelle_bati": ":.0f",
+                        "date_mutation_str": True
+                    },
+                    color_continuous_scale="Viridis",
+                    size_max=15,
+                    zoom=12,
+                    title="Carte des transactions (prix/m² en couleur, taille = surface)"
+                )
+                fig_map.update_layout(mapbox_style="open-street-map")
+                fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
+                st.plotly_chart(fig_map, use_container_width=True)
+            except Exception as e:
+                # Fallback vers st.map
+                st.warning(f"Erreur Plotly, affichage simplifié avec st.map : {e}")
+                st.map(map_sample[['latitude', 'longitude']])
+        else:
+            st.warning("Aucune donnée valide après nettoyage.")
     else:
         st.warning("Coordonnées hors des limites de la France métropolitaine.")
 else:
