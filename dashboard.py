@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 import requests
 from datetime import datetime
@@ -351,7 +350,7 @@ with col2:
     else:
         st.info("Pas de répartition par type (un seul type présent).")
 
-# ---------- CARTE (réécrite avec go.Scattermapbox) ----------
+# ---------- CARTE (px.scatter_mapbox corrigé) ----------
 st.subheader(f"Carte des transactions - {selected_commune_name}")
 
 if 'latitude' in df.columns and 'longitude' in df.columns:
@@ -365,43 +364,29 @@ if 'latitude' in df.columns and 'longitude' in df.columns:
         sample_size = min(2000, len(map_data))
         map_sample = map_data.sample(n=sample_size, random_state=42)
         
-        # Construction avec go.Figure + go.Scattermapbox
-        fig_map = go.Figure()
-        fig_map.add_trace(go.Scattermapbox(
-            lat=map_sample['latitude'],
-            lon=map_sample['longitude'],
-            mode='markers',
-            marker=dict(
-                size=map_sample['surface_reelle_bati'] / 5,  # ajustement visuel
-                color=map_sample['prix_m2'],
-                colorscale='Viridis',
-                showscale=True,
-                colorbar=dict(title="Prix/m² (€)")
-            ),
-            text=[
-                f"Prix: {v:,.0f} €<br>Surface: {s:.0f} m²<br>Prix/m²: {p:.0f} €<br>Date: {d.strftime('%d/%m/%Y')}"
-                for v, s, p, d in zip(
-                    map_sample['valeur_fonciere'],
-                    map_sample['surface_reelle_bati'],
-                    map_sample['prix_m2'],
-                    map_sample['date_mutation']
-                )
-            ],
-            hoverinfo='text'
-        ))
+        # Créer une colonne pour le hover_name (obligatoire, en string)
+        map_sample['hover_label'] = map_sample.index.astype(str)  # ou toute autre colonne
         
-        fig_map.update_layout(
-            mapbox=dict(
-                style="open-street-map",
-                zoom=12,
-                center=dict(
-                    lat=map_sample['latitude'].mean(),
-                    lon=map_sample['longitude'].mean()
-                )
-            ),
-            margin={"r":0, "t":30, "l":0, "b":0},
-            height=600
+        fig_map = px.scatter_mapbox(
+            map_sample,
+            lat="latitude",
+            lon="longitude",
+            color="prix_m2",
+            size="surface_reelle_bati",
+            hover_name="hover_label",  # colonne de type string
+            hover_data={
+                "prix_m2": ":.0f",
+                "valeur_fonciere": ":.0f",
+                "surface_reelle_bati": ":.0f",
+                "date_mutation": True
+            },
+            color_continuous_scale="Viridis",
+            size_max=15,
+            zoom=12,
+            title="Carte des transactions (prix/m² en couleur, taille = surface)"
         )
+        fig_map.update_layout(mapbox_style="open-street-map")
+        fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
         st.plotly_chart(fig_map, use_container_width=True)
     else:
         st.warning("Coordonnées hors des limites de la France métropolitaine.")
