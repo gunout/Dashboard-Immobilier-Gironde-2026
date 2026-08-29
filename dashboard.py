@@ -134,18 +134,14 @@ COMMUNES_GIRONDE = {
 NOMS_COMMUNES = {v: k for k, v in COMMUNES_GIRONDE.items()}
 
 # ---------- CONVERSION LAMBERT93 → WGS84 (optimisée) ----------
-# On essaie d'importer pyproj, sinon on utilise une approximation vectorisée
 try:
     import pyproj
     transformer = pyproj.Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
     def lambert_to_wgs84(x_vals, y_vals):
-        # x_vals, y_vals sont des tableaux numpy
         lon, lat = transformer.transform(x_vals, y_vals)
         return lat, lon
 except ImportError:
-    # Approximation vectorisée (utilisable pour la France)
     def lambert_to_wgs84(x_vals, y_vals):
-        # Coefficients approximatifs pour la Gironde
         lat = 44.5 + (y_vals - 6500000) / 111000
         lon = -0.5 + (x_vals - 500000) / 82000
         return lat, lon
@@ -158,8 +154,6 @@ def load_all_data():
         return pd.DataFrame()
     
     try:
-        # Lecture avec séparateur '|' - on utilise un sous-échantillon pour accélérer le développement ?
-        # Mais on garde tout.
         with st.spinner("Lecture du fichier CSV..."):
             try:
                 df = pd.read_csv(
@@ -194,7 +188,7 @@ def load_all_data():
             st.warning("Le fichier est vide ou n'a pas pu être lu.")
             return pd.DataFrame()
         
-        # Renommage des colonnes
+        # Renommage
         rename_dict = {
             'datemut': 'date_mutation',
             'valeurfonc': 'valeur_fonciere',
@@ -207,12 +201,10 @@ def load_all_data():
         rename_dict = {k: v for k, v in rename_dict.items() if k in df.columns}
         df.rename(columns=rename_dict, inplace=True)
         
-        # Vérification des colonnes obligatoires
         required = ['valeur_fonciere', 'surface_reelle_bati', 'date_mutation', 'code_commune']
         missing = [col for col in required if col not in df.columns]
         if missing:
-            cols_dispo = list(df.columns)
-            st.error(f"Colonnes manquantes : {missing}. Colonnes disponibles : {cols_dispo}")
+            st.error(f"Colonnes manquantes : {missing}. Colonnes disponibles : {list(df.columns)}")
             return pd.DataFrame()
         
         # Nettoyage
@@ -248,7 +240,7 @@ def load_all_data():
                 else:
                     df["type_local"] = "Inconnu"
         
-        # Prix au m² et filtrage
+        # Prix au m²
         with st.spinner("Calcul du prix au m²..."):
             df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
             df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
@@ -257,21 +249,18 @@ def load_all_data():
             st.warning("Aucune donnée dans les plages de prix au m².")
             return pd.DataFrame()
         
-        # Code commune
         df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
         
-        # Conversion des coordonnées (vectorisée)
+        # Conversion des coordonnées
         with st.spinner("Conversion des coordonnées Lambert -> WGS84..."):
             if 'x_lambert' in df.columns and 'y_lambert' in df.columns:
                 x = pd.to_numeric(df['x_lambert'], errors='coerce').values
                 y = pd.to_numeric(df['y_lambert'], errors='coerce').values
-                # Filtrer les valeurs valides
                 mask = ~np.isnan(x) & ~np.isnan(y)
                 if np.any(mask):
                     lat, lon = lambert_to_wgs84(x[mask], y[mask])
                     df.loc[mask, 'latitude'] = lat
                     df.loc[mask, 'longitude'] = lon
-                # Les autres restent NaN
             else:
                 df['latitude'] = np.nan
                 df['longitude'] = np.nan
@@ -309,8 +298,6 @@ if df.empty:
 
 # Filtres
 st.sidebar.header("Filtres")
-# Pas de code postal
-
 types_dispo = ["Tous"] + sorted(df["type_local"].unique())
 type_local = st.sidebar.selectbox("Type", types_dispo)
 
@@ -368,37 +355,37 @@ st.subheader(f"Carte des transactions - {selected_commune_name}")
 if 'latitude' in df.columns and 'longitude' in df.columns:
     map_data = df[['latitude', 'longitude', 'prix_m2', 'surface_reelle_bati', 'valeur_fonciere', 'date_mutation']].copy()
     map_data = map_data.dropna(subset=['latitude', 'longitude'])
-    # Vérifier que les valeurs sont dans des plages plausibles (France métropolitaine)
     map_data = map_data[
         (map_data['latitude'].between(42, 52)) &
         (map_data['longitude'].between(-5, 10))
     ]
     if not map_data.empty:
         sample_size = min(2000, len(map_data))
-        if sample_size > 0:
-            map_sample = map_data.sample(n=sample_size, random_state=42)
-            fig_map = px.scatter_mapbox(
-                map_sample,
-                lat="latitude",
-                lon="longitude",
-                color="prix_m2",
-                size="surface_reelle_bati",
-                hover_name=map_sample.index,
-                hover_data={"prix_m2": ":.0f", "valeur_fonciere": ":.0f", "surface_reelle_bati": ":.0f", "date_mutation": True},
-                color_continuous_scale="Viridis",
-                size_max=15,
-                zoom=12,
-                title="Carte des transactions (prix/m² en couleur, taille = surface)"
-            )
-            fig_map.update_layout(mapbox_style="open-street-map")
-            fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
-            st.plotly_chart(fig_map, use_container_width=True)
-        else:
-            st.warning("Aucune donnée à afficher sur la carte.")
+        map_sample = map_data.sample(n=sample_size, random_state=42)
+        fig_map = px.scatter_mapbox(
+            map_sample,
+            lat="latitude",
+            lon="longitude",
+            color="prix_m2",
+            size="surface_reelle_bati",
+            hover_data={
+                "prix_m2": ":.0f",
+                "valeur_fonciere": ":.0f",
+                "surface_reelle_bati": ":.0f",
+                "date_mutation": True
+            },
+            color_continuous_scale="Viridis",
+            size_max=15,
+            zoom=12,
+            title="Carte des transactions (prix/m² en couleur, taille = surface)"
+        )
+        fig_map.update_layout(mapbox_style="open-street-map")
+        fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
+        st.plotly_chart(fig_map, use_container_width=True)
     else:
         st.warning("Coordonnées hors des limites de la France métropolitaine.")
 else:
-    st.info("Les colonnes latitude/longitude ne sont pas disponibles dans les données.")
+    st.info("Les colonnes latitude/longitude ne sont pas disponibles.")
 
 # Dernières transactions
 st.subheader("Dernières transactions")
