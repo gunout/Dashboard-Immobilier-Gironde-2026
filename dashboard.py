@@ -147,7 +147,7 @@ except ImportError:
         lon = -0.5 + (x_vals - 500000) / 82000
         return lat, lon
 
-# ---------- DATA LOADING OPTIMISÉE ----------
+# ---------- DATA LOADING (optimisée) ----------
 @st.cache_data
 def load_all_data():
     if os.path.exists(CACHE_PARQUET):
@@ -244,7 +244,6 @@ def load_all_data():
             df['latitude'] = np.nan
             df['longitude'] = np.nan
     
-    # Nettoyage final
     df.drop(columns=['x_lambert', 'y_lambert', 'type_libelle', 'codtypbien'], errors='ignore', inplace=True)
     
     with st.spinner("Sauvegarde du cache Parquet..."):
@@ -332,7 +331,7 @@ with col2:
     else:
         st.info("Pas de répartition par type (un seul type présent).")
 
-# ---------- CARTE AVEC FALLBACK ----------
+# ---------- CARTE AVEC st.map (personnalisée) ----------
 st.subheader(f"Carte des transactions - {selected_commune_name}")
 
 if 'latitude' in df.columns and 'longitude' in df.columns:
@@ -346,41 +345,40 @@ if 'latitude' in df.columns and 'longitude' in df.columns:
         sample_size = min(2000, len(map_data))
         map_sample = map_data.sample(n=sample_size, random_state=42)
         
-        # Nettoyer les infinis et NaN
-        for col in ['prix_m2', 'surface_reelle_bati', 'valeur_fonciere']:
+        # Nettoyer les infinis
+        for col in ['prix_m2', 'surface_reelle_bati']:
             map_sample[col] = map_sample[col].replace([np.inf, -np.inf], np.nan)
             map_sample = map_sample.dropna(subset=[col])
         
-        # Convertir date en string
-        map_sample['date_mutation_str'] = map_sample['date_mutation'].dt.strftime('%d/%m/%Y')
-        
         if not map_sample.empty:
-            try:
-                # Tentative avec Plotly
-                fig_map = px.scatter_mapbox(
-                    map_sample,
-                    lat="latitude",
-                    lon="longitude",
-                    color="prix_m2",
-                    size="surface_reelle_bati",
-                    hover_data={
-                        "prix_m2": ":.0f",
-                        "valeur_fonciere": ":.0f",
-                        "surface_reelle_bati": ":.0f",
-                        "date_mutation_str": True
-                    },
-                    color_continuous_scale="Viridis",
-                    size_max=15,
-                    zoom=12,
-                    title="Carte des transactions (prix/m² en couleur, taille = surface)"
+            # Normaliser la taille entre 20 et 150 (pixels)
+            surf_min = map_sample['surface_reelle_bati'].min()
+            surf_max = map_sample['surface_reelle_bati'].max()
+            if surf_max > surf_min:
+                map_sample['size'] = 20 + (map_sample['surface_reelle_bati'] - surf_min) / (surf_max - surf_min) * 130
+            else:
+                map_sample['size'] = 80
+            
+            # Créer une colonne de couleur basée sur le prix/m² (gradient vert-rouge)
+            prix_min = map_sample['prix_m2'].min()
+            prix_max = map_sample['prix_m2'].max()
+            if prix_max > prix_min:
+                map_sample['color_norm'] = (map_sample['prix_m2'] - prix_min) / (prix_max - prix_min)
+                # Couleur hex : vert (faible) -> jaune -> rouge (élevé)
+                map_sample['color'] = map_sample['color_norm'].apply(
+                    lambda x: f"#{int(255*x):02x}{int(255*(1-x)):02x}00"
                 )
-                fig_map.update_layout(mapbox_style="open-street-map")
-                fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
-                st.plotly_chart(fig_map, use_container_width=True)
-            except Exception as e:
-                # Fallback vers st.map
-                st.warning(f"Erreur Plotly, affichage simplifié avec st.map : {e}")
-                st.map(map_sample[['latitude', 'longitude']])
+            else:
+                map_sample['color'] = "#0000FF"  # bleu par défaut
+            
+            # Afficher avec st.map
+            st.map(
+                map_sample,
+                latitude='latitude',
+                longitude='longitude',
+                size='size',
+                color='color'
+            )
         else:
             st.warning("Aucune donnée valide après nettoyage.")
     else:
