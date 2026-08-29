@@ -16,20 +16,9 @@ st.set_page_config(
 # ---------- DATA DOWNLOAD ----------
 DATA_URL = "https://github.com/gunout/Dashboard-Immobilier-Gironde-2026/releases/download/DVF-33/dvf_plus_d33.csv"
 DATA_FILE = "dvf_plus_d33.csv"
+CACHE_PARQUET = "dvf_clean.parquet"  # pour stocker une version nettoyée et compressée
 
-if not os.path.exists(DATA_FILE):
-    with st.spinner(f"Téléchargement de {DATA_FILE}..."):
-        try:
-            r = requests.get(DATA_URL, stream=True)
-            with open(DATA_FILE, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            st.success("Fichier téléchargé avec succès.")
-        except Exception as e:
-            st.error(f"Impossible de télécharger le fichier : {e}")
-            st.stop()
-
-# ---------- COMMUNES DICTIONARY ----------
+# ---------- COMMUNES DICTIONARY (inchangé) ----------
 COMMUNES_GIRONDE = {
     "33063": "Bordeaux",
     "33039": "Bègles",
@@ -146,130 +135,125 @@ except ImportError:
         lon = -0.5 + (x_vals - 500000) / 82000
         return lat, lon
 
-# ---------- DATA LOADING ----------
+# ---------- DATA LOADING OPTIMISÉE ----------
 @st.cache_data
 def load_all_data():
+    # Si un fichier Parquet nettoyé existe déjà, on le charge (beaucoup plus rapide)
+    if os.path.exists(CACHE_PARQUET):
+        with st.spinner("Chargement des données optimisées..."):
+            df = pd.read_parquet(CACHE_PARQUET)
+        st.success(f"Données chargées : {len(df):,} transactions (depuis cache Parquet).")
+        return df
+
+    # Sinon, on lit le CSV en ne gardant que les colonnes utiles
     if not os.path.exists(DATA_FILE):
         st.error(f"Fichier {DATA_FILE} introuvable.")
         return pd.DataFrame()
     
+    # Colonnes nécessaires
+    usecols = [
+        'datemut', 'valeurfonc', 'sbati', 'l_codinsee',
+        'libtypbien', 'geompar_x', 'geompar_y', 'codtypbien'
+    ]
+    
     try:
-        with st.spinner("Lecture du fichier CSV..."):
-            try:
-                df = pd.read_csv(
-                    DATA_FILE,
-                    sep='|',
-                    low_memory=False,
-                    on_bad_lines='skip',
-                    encoding='utf-8',
-                    quotechar='"'
-                )
-            except TypeError:
-                df = pd.read_csv(
-                    DATA_FILE,
-                    sep='|',
-                    low_memory=False,
-                    error_bad_lines=False,
-                    warn_bad_lines=True,
-                    encoding='utf-8',
-                    quotechar='"'
-                )
-            except Exception:
-                df = pd.read_csv(
-                    DATA_FILE,
-                    sep='|',
-                    low_memory=False,
-                    on_bad_lines='skip',
-                    encoding='latin1',
-                    quotechar='"'
-                )
-        
-        if df.empty:
-            st.warning("Le fichier est vide ou n'a pas pu être lu.")
-            return pd.DataFrame()
-        
-        # Renommage
-        rename_dict = {
-            'datemut': 'date_mutation',
-            'valeurfonc': 'valeur_fonciere',
-            'sbati': 'surface_reelle_bati',
-            'l_codinsee': 'code_commune',
-            'libtypbien': 'type_libelle',
-            'geompar_x': 'x_lambert',
-            'geompar_y': 'y_lambert'
-        }
-        rename_dict = {k: v for k, v in rename_dict.items() if k in df.columns}
-        df.rename(columns=rename_dict, inplace=True)
-        
-        required = ['valeur_fonciere', 'surface_reelle_bati', 'date_mutation', 'code_commune']
-        missing = [col for col in required if col not in df.columns]
-        if missing:
-            st.error(f"Colonnes manquantes : {missing}. Colonnes disponibles : {list(df.columns)}")
-            return pd.DataFrame()
-        
-        # Nettoyage
-        with st.spinner("Nettoyage des données..."):
-            df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
-            df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
-            df["surface_reelle_bati"] = pd.to_numeric(df["surface_reelle_bati"], errors='coerce')
-            df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
-            df = df[df["surface_reelle_bati"] > 0]
-        
-        if df.empty:
-            st.warning("Aucune transaction valide après nettoyage.")
-            return pd.DataFrame()
-        
-        # Type de bien
-        with st.spinner("Filtrage des types de biens..."):
-            if "type_libelle" in df.columns:
-                def extraire_type(lib):
-                    if pd.isna(lib):
-                        return "Autre"
-                    lib = lib.upper()
-                    if "MAISON" in lib:
-                        return "Maison"
-                    elif "APPARTEMENT" in lib:
-                        return "Appartement"
-                    return "Autre"
-                df["type_local"] = df["type_libelle"].apply(extraire_type)
-                df = df[df["type_local"].isin(["Maison", "Appartement"])]
-            else:
-                if "codtypbien" in df.columns:
-                    df = df[df["codtypbien"].isin([111, 121])]
-                    df["type_local"] = df["codtypbien"].apply(lambda x: "Maison" if x == 111 else "Appartement")
-                else:
-                    df["type_local"] = "Inconnu"
-        
-        # Prix au m²
-        with st.spinner("Calcul du prix au m²..."):
-            df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
-            df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
-        
-        if df.empty:
-            st.warning("Aucune donnée dans les plages de prix au m².")
-            return pd.DataFrame()
-        
-        df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
-        
-        # Conversion des coordonnées
-        with st.spinner("Conversion des coordonnées Lambert -> WGS84..."):
-            if 'x_lambert' in df.columns and 'y_lambert' in df.columns:
-                x = pd.to_numeric(df['x_lambert'], errors='coerce').values
-                y = pd.to_numeric(df['y_lambert'], errors='coerce').values
-                mask = ~np.isnan(x) & ~np.isnan(y)
-                if np.any(mask):
-                    lat, lon = lambert_to_wgs84(x[mask], y[mask])
-                    df.loc[mask, 'latitude'] = lat
-                    df.loc[mask, 'longitude'] = lon
-            else:
-                df['latitude'] = np.nan
-                df['longitude'] = np.nan
-        
-        st.success(f"Données chargées : {len(df):,} transactions (Maisons + Appartements).")
-        return df
+        with st.spinner("Lecture du fichier CSV (optimisée)..."):
+            # On ne lit que les colonnes utiles
+            df = pd.read_csv(
+                DATA_FILE,
+                sep='|',
+                usecols=usecols,
+                low_memory=False,
+                on_bad_lines='skip',
+                encoding='utf-8',
+                quotechar='"'
+            )
     except Exception as e:
-        st.error(f"Erreur lors du chargement : {e}")
+        st.error(f"Erreur de lecture : {e}")
         return pd.DataFrame()
+    
+    if df.empty:
+        st.warning("Le fichier est vide ou n'a pas pu être lu.")
+        return pd.DataFrame()
+    
+    # Renommage
+    df.rename(columns={
+        'datemut': 'date_mutation',
+        'valeurfonc': 'valeur_fonciere',
+        'sbati': 'surface_reelle_bati',
+        'l_codinsee': 'code_commune',
+        'libtypbien': 'type_libelle',
+        'geompar_x': 'x_lambert',
+        'geompar_y': 'y_lambert'
+    }, inplace=True)
+    
+    # Nettoyage rapide
+    with st.spinner("Nettoyage des données..."):
+        df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
+        df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
+        df["surface_reelle_bati"] = pd.to_numeric(df["surface_reelle_bati"], errors='coerce')
+        df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
+        df = df[df["surface_reelle_bati"] > 0]
+    
+    if df.empty:
+        st.warning("Aucune transaction valide après nettoyage.")
+        return pd.DataFrame()
+    
+    # Type de bien
+    with st.spinner("Filtrage des types de biens..."):
+        if "type_libelle" in df.columns:
+            def extraire_type(lib):
+                if pd.isna(lib):
+                    return "Autre"
+                lib = lib.upper()
+                if "MAISON" in lib:
+                    return "Maison"
+                elif "APPARTEMENT" in lib:
+                    return "Appartement"
+                return "Autre"
+            df["type_local"] = df["type_libelle"].apply(extraire_type)
+            df = df[df["type_local"].isin(["Maison", "Appartement"])]
+        else:
+            if "codtypbien" in df.columns:
+                df = df[df["codtypbien"].isin([111, 121])]
+                df["type_local"] = df["codtypbien"].apply(lambda x: "Maison" if x == 111 else "Appartement")
+            else:
+                df["type_local"] = "Inconnu"
+    
+    # Prix au m²
+    with st.spinner("Calcul du prix au m²..."):
+        df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
+        df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
+    
+    if df.empty:
+        st.warning("Aucune donnée dans les plages de prix au m².")
+        return pd.DataFrame()
+    
+    df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
+    
+    # Conversion des coordonnées (vectorisée)
+    with st.spinner("Conversion des coordonnées Lambert -> WGS84..."):
+        if 'x_lambert' in df.columns and 'y_lambert' in df.columns:
+            x = pd.to_numeric(df['x_lambert'], errors='coerce').values
+            y = pd.to_numeric(df['y_lambert'], errors='coerce').values
+            mask = ~np.isnan(x) & ~np.isnan(y)
+            if np.any(mask):
+                lat, lon = lambert_to_wgs84(x[mask], y[mask])
+                df.loc[mask, 'latitude'] = lat
+                df.loc[mask, 'longitude'] = lon
+        else:
+            df['latitude'] = np.nan
+            df['longitude'] = np.nan
+    
+    # On supprime les colonnes inutiles pour gagner de la place
+    df.drop(columns=['x_lambert', 'y_lambert', 'type_libelle', 'codtypbien'], errors='ignore', inplace=True)
+    
+    # Sauvegarde en Parquet pour les prochains chargements
+    with st.spinner("Sauvegarde du cache optimisé..."):
+        df.to_parquet(CACHE_PARQUET, compression='snappy')
+    
+    st.success(f"Données chargées : {len(df):,} transactions (Maisons + Appartements).")
+    return df
 
 # ---------- UI ----------
 st.title("Dashboard Immobilier Gironde 2026")
@@ -350,7 +334,7 @@ with col2:
     else:
         st.info("Pas de répartition par type (un seul type présent).")
 
-# ---------- CARTE (px.scatter_mapbox corrigé) ----------
+# ---------- CARTE ----------
 st.subheader(f"Carte des transactions - {selected_commune_name}")
 
 if 'latitude' in df.columns and 'longitude' in df.columns:
@@ -364,8 +348,8 @@ if 'latitude' in df.columns and 'longitude' in df.columns:
         sample_size = min(2000, len(map_data))
         map_sample = map_data.sample(n=sample_size, random_state=42)
         
-        # Créer une colonne pour le hover_name (obligatoire, en string)
-        map_sample['hover_label'] = map_sample.index.astype(str)  # ou toute autre colonne
+        # Créer une colonne pour le hover_name
+        map_sample['hover_label'] = map_sample.index.astype(str)
         
         fig_map = px.scatter_mapbox(
             map_sample,
@@ -373,7 +357,7 @@ if 'latitude' in df.columns and 'longitude' in df.columns:
             lon="longitude",
             color="prix_m2",
             size="surface_reelle_bati",
-            hover_name="hover_label",  # colonne de type string
+            hover_name="hover_label",
             hover_data={
                 "prix_m2": ":.0f",
                 "valeur_fonciere": ":.0f",
