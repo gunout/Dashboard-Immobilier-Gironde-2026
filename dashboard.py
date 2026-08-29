@@ -174,19 +174,18 @@ def load_all_data():
             st.warning("Le fichier est vide ou n'a pas pu être lu.")
             return pd.DataFrame()
         
-        # ---------- RENOMMAGE DIRECT DES COLONNES ----------
-        # Mapping précis des colonnes réelles (d'après votre liste)
+        # ---------- RENOMMAGE PRÉCIS (noms réels) ----------
         rename_dict = {
             'datemut': 'date_mutation',
             'valeurfonc': 'valeur_fonciere',
-            'sbati': 'surface_reelle_bati',      # surface totale du bien
+            'sbati': 'surface_reelle_bati',   # surface totale du bien
             'l_codinsee': 'code_commune',
-            'libtypbien': 'type_local',
+            'libtypbien': 'type_libelle',     # on garde le libellé complet
             'geompar_x': 'longitude',
             'geompar_y': 'latitude',
             'l_dcnt': 'code_postal'
         }
-        # Ne garder que les colonnes qui existent vraiment
+        # Ne garder que les colonnes existantes
         rename_dict = {k: v for k, v in rename_dict.items() if k in df.columns}
         df.rename(columns=rename_dict, inplace=True)
         
@@ -194,7 +193,6 @@ def load_all_data():
         required = ['valeur_fonciere', 'surface_reelle_bati', 'date_mutation', 'code_commune']
         missing = [col for col in required if col not in df.columns]
         if missing:
-            # Affichage de diagnostic
             cols_dispo = list(df.columns)
             st.error(f"Colonnes manquantes : {missing}. Colonnes disponibles : {cols_dispo}")
             return pd.DataFrame()
@@ -207,29 +205,50 @@ def load_all_data():
         df["valeur_fonciere"] = pd.to_numeric(df["valeur_fonciere"], errors='coerce')
         df["surface_reelle_bati"] = pd.to_numeric(df["surface_reelle_bati"], errors='coerce')
         
-        # Suppression des lignes avec valeurs manquantes critiques
+        # Suppression des lignes avec valeurs manquantes ou surface nulle
         df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
+        df = df[df["surface_reelle_bati"] > 0]   # surface doit être positive
+        
         if df.empty:
-            st.warning("Aucune transaction valide après nettoyage (valeurs manquantes).")
+            st.warning("Aucune transaction valide après nettoyage (valeurs manquantes ou surface nulle).")
             return pd.DataFrame()
         
-        # Filtrage des types de biens (Maison / Appartement)
-        if "type_local" in df.columns:
-            df = df[df["type_local"].isin(['Maison', 'Appartement'])]
+        # --- FILTRAGE DES TYPES DE BIENS (Maison / Appartement) ---
+        if "type_libelle" in df.columns:
+            # On crée une colonne 'type_local' standardisée
+            def extraire_type(lib):
+                if pd.isna(lib):
+                    return "Autre"
+                lib = lib.upper()
+                if "MAISON" in lib:
+                    return "Maison"
+                elif "APPARTEMENT" in lib:
+                    return "Appartement"
+                else:
+                    return "Autre"
+            df["type_local"] = df["type_libelle"].apply(extraire_type)
+            # On ne garde que Maison et Appartement pour l'analyse
+            df = df[df["type_local"].isin(["Maison", "Appartement"])]
         else:
-            # Si la colonne type_local n'existe pas, on essaie avec codtypbien
+            # Si pas de libellé, on tente avec codtypbien (1=Maison, 2=Appartement ?)
             if "codtypbien" in df.columns:
-                # codtypbien: 1 = Maison, 2 = Appartement (à vérifier)
-                df = df[df["codtypbien"].isin([1, 2])]
+                # D'après l'échantillon : 111=Maison, 121=Appartement, 14=Activité, 21=Terrain
+                df = df[df["codtypbien"].isin([111, 121])]
+                # On ajoute une colonne type_local factice
+                df["type_local"] = df["codtypbien"].apply(lambda x: "Maison" if x == 111 else "Appartement")
+            else:
+                st.warning("Aucune colonne de type trouvée, on garde toutes les transactions.")
+                df["type_local"] = "Inconnu"
         
         # Prix au m²
         df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
+        # Filtrer les outliers
         df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
         if df.empty:
             st.warning("Aucune donnée dans les plages de prix au m² (200-15000).")
             return pd.DataFrame()
         
-        # Code commune : s'assurer qu'il est en string et format 5 chiffres
+        # Code commune : format 5 chiffres
         df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
         
         # Coordonnées
@@ -237,15 +256,15 @@ def load_all_data():
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             else:
-                df[col] = None  # colonne vide pour éviter les erreurs
+                df[col] = None
         
-        st.success(f"Données chargées : {len(df):,} transactions.")
+        st.success(f"Données chargées : {len(df):,} transactions (Maisons + Appartements).")
         return df
     except Exception as e:
         st.error(f"Erreur lors du chargement : {e}")
         return pd.DataFrame()
 
-# ---------- UI (identique à la version précédente) ----------
+# ---------- UI ----------
 st.title("Dashboard Immobilier Gironde 2026")
 
 st.sidebar.header("Commune")
@@ -279,9 +298,7 @@ if "code_postal" in df.columns and not df["code_postal"].isna().all():
 else:
     df_filtre = df.copy()
 
-types_dispo = ["Tous"]
-if "type_local" in df_filtre.columns:
-    types_dispo.extend(sorted(df_filtre["type_local"].dropna().unique()))
+types_dispo = ["Tous"] + sorted(df_filtre["type_local"].unique())
 type_local = st.sidebar.selectbox("Type", types_dispo)
 
 prix_min = st.sidebar.number_input("Prix min (€)", 0, step=10000, value=0)
@@ -300,7 +317,7 @@ if "date_mutation" in df_filtre.columns:
 
 df_filtre = df_filtre[(df_filtre['valeur_fonciere'] >= prix_min) & 
                        (df_filtre['valeur_fonciere'] <= prix_max)].copy()
-if type_local != 'Tous' and "type_local" in df_filtre.columns:
+if type_local != 'Tous':
     df_filtre = df_filtre[df_filtre['type_local'] == type_local]
 
 if df_filtre.empty:
@@ -328,11 +345,11 @@ with col1:
     st.plotly_chart(fig_hist, use_container_width=True)
 
 with col2:
-    if "type_local" in df_filtre.columns:
+    if "type_local" in df_filtre.columns and len(df_filtre["type_local"].unique()) > 1:
         fig_pie = px.pie(df_filtre, names='type_local', title="Répartition par type")
         st.plotly_chart(fig_pie, use_container_width=True)
     else:
-        st.info("Pas de données de type pour le graphique circulaire.")
+        st.info("Pas de répartition par type (un seul type présent).")
 
 # Carte
 st.subheader(f"Carte des transactions - {selected_commune_name}")
