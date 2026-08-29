@@ -140,11 +140,11 @@ def load_all_data():
         return pd.DataFrame()
     
     try:
-        # Lecture robuste du CSV
+        # Lecture avec séparateur '|' (pipe)
         try:
             df = pd.read_csv(
                 DATA_FILE,
-                sep=',',
+                sep='|',                     # <- corrigé ici
                 low_memory=False,
                 on_bad_lines='skip',
                 encoding='utf-8',
@@ -153,7 +153,7 @@ def load_all_data():
         except TypeError:
             df = pd.read_csv(
                 DATA_FILE,
-                sep=',',
+                sep='|',
                 low_memory=False,
                 error_bad_lines=False,
                 warn_bad_lines=True,
@@ -163,7 +163,7 @@ def load_all_data():
         except Exception:
             df = pd.read_csv(
                 DATA_FILE,
-                sep=',',
+                sep='|',
                 low_memory=False,
                 on_bad_lines='skip',
                 encoding='latin1',
@@ -180,7 +180,7 @@ def load_all_data():
             'valeurfonc': 'valeur_fonciere',
             'sbati': 'surface_reelle_bati',   # surface totale du bien
             'l_codinsee': 'code_commune',
-            'libtypbien': 'type_libelle',     # on garde le libellé complet
+            'libtypbien': 'type_libelle',
             'geompar_x': 'longitude',
             'geompar_y': 'latitude',
             'l_dcnt': 'code_postal'
@@ -207,7 +207,7 @@ def load_all_data():
         
         # Suppression des lignes avec valeurs manquantes ou surface nulle
         df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
-        df = df[df["surface_reelle_bati"] > 0]   # surface doit être positive
+        df = df[df["surface_reelle_bati"] > 0]
         
         if df.empty:
             st.warning("Aucune transaction valide après nettoyage (valeurs manquantes ou surface nulle).")
@@ -215,7 +215,6 @@ def load_all_data():
         
         # --- FILTRAGE DES TYPES DE BIENS (Maison / Appartement) ---
         if "type_libelle" in df.columns:
-            # On crée une colonne 'type_local' standardisée
             def extraire_type(lib):
                 if pd.isna(lib):
                     return "Autre"
@@ -227,14 +226,11 @@ def load_all_data():
                 else:
                     return "Autre"
             df["type_local"] = df["type_libelle"].apply(extraire_type)
-            # On ne garde que Maison et Appartement pour l'analyse
             df = df[df["type_local"].isin(["Maison", "Appartement"])]
         else:
-            # Si pas de libellé, on tente avec codtypbien (1=Maison, 2=Appartement ?)
+            # Fallback avec codtypbien : 111=Maison, 121=Appartement (d'après l'extrait)
             if "codtypbien" in df.columns:
-                # D'après l'échantillon : 111=Maison, 121=Appartement, 14=Activité, 21=Terrain
                 df = df[df["codtypbien"].isin([111, 121])]
-                # On ajoute une colonne type_local factice
                 df["type_local"] = df["codtypbien"].apply(lambda x: "Maison" if x == 111 else "Appartement")
             else:
                 st.warning("Aucune colonne de type trouvée, on garde toutes les transactions.")
@@ -242,7 +238,6 @@ def load_all_data():
         
         # Prix au m²
         df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
-        # Filtrer les outliers
         df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
         if df.empty:
             st.warning("Aucune donnée dans les plages de prix au m² (200-15000).")
@@ -264,7 +259,7 @@ def load_all_data():
         st.error(f"Erreur lors du chargement : {e}")
         return pd.DataFrame()
 
-# ---------- UI ----------
+# ---------- UI (inchangée, mais je la reproduis pour être complet) ----------
 st.title("Dashboard Immobilier Gironde 2026")
 
 st.sidebar.header("Commune")
