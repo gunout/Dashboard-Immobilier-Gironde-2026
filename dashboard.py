@@ -174,21 +174,16 @@ def load_all_data():
             st.warning("Le fichier est vide ou n'a pas pu être lu.")
             return pd.DataFrame()
         
-        # --- AFFICHAGE DES COLONNES POUR DIAGNOSTIC (dans un expander plus tard) ---
-        # On stocke les noms de colonnes dans une variable pour diagnostic
-        colonnes = list(df.columns)
-        
-        # --- RECHERCHE ET RENOMMAGE DES COLONNES ESSENTIELLES ---
-        # Mapping des noms possibles -> noms standard
+        # --- MAPPING DES COLONNES (correspondance avec les noms réels) ---
         mapping = {
-            'valeur_fonciere': ['valeur_fonciere', 'valeur_foncier', 'valeur', 'prix', 'montant'],
-            'surface_reelle_bati': ['surface_reelle_bati', 'surface', 'surface_bati', 'surface_habitable'],
-            'date_mutation': ['date_mutation', 'date', 'date_acte', 'date_mut'],
+            'valeur_fonciere': ['valeur_fonciere', 'valeur_foncier', 'valeur', 'prix', 'montant', 'valeurfonc'],
+            'surface_reelle_bati': ['surface_reelle_bati', 'surface', 'surface_bati', 'surface_habitable', 'sbati', 'sbatmai', 'sbatapt'],
+            'date_mutation': ['date_mutation', 'date', 'date_acte', 'date_mut', 'datemut'],
             'code_commune': ['code_commune', 'l_codinsee', 'codgeo', 'commune_code'],
-            'type_local': ['type_local', 'libtypbien', 'type', 'nature'],
-            'code_postal': ['code_postal', 'cp', 'codepostal'],
-            'latitude': ['latitude', 'lat', 'y'],
-            'longitude': ['longitude', 'long', 'x']
+            'type_local': ['type_local', 'libtypbien', 'type', 'nature', 'codtypbien'],
+            'code_postal': ['code_postal', 'cp', 'codepostal', 'l_dcnt'],
+            'latitude': ['latitude', 'lat', 'y', 'geompar_y'],
+            'longitude': ['longitude', 'long', 'x', 'geompar_x']
         }
         
         rename_dict = {}
@@ -196,17 +191,18 @@ def load_all_data():
             for var in variants:
                 if var in df.columns:
                     rename_dict[var] = standard
-                    break  # on prend la première trouvée
+                    break
         
-        # Appliquer le renommage
         if rename_dict:
             df.rename(columns=rename_dict, inplace=True)
         
-        # Vérification des colonnes obligatoires
+        # Vérification des colonnes obligatoires après renommage
         required = ['valeur_fonciere', 'surface_reelle_bati', 'date_mutation', 'code_commune']
         missing = [col for col in required if col not in df.columns]
         if missing:
-            st.error(f"Colonnes manquantes : {missing}. Colonnes disponibles : {colonnes}")
+            # Affichage des colonnes disponibles pour diagnostic
+            cols_dispo = list(df.columns)
+            st.error(f"Colonnes manquantes : {missing}. Colonnes disponibles : {cols_dispo}")
             return pd.DataFrame()
         
         # --- NETTOYAGE ---
@@ -225,9 +221,9 @@ def load_all_data():
         
         # Filtrage des types de biens (Maison / Appartement)
         if "type_local" in df.columns:
+            # On garde seulement Maison et Appartement
             df = df[df["type_local"].isin(['Maison', 'Appartement'])]
-        # Si type_local n'existe pas, on essaie de filtrer via libtypbien (déjà renommé)
-        # mais on a déjà renommé, donc si type_local existe, on a fait le filtre.
+        # Si la colonne n'existe pas, on ignore le filtrage (mais elle devrait exister via libtypbien)
         
         # Prix au m²
         df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
@@ -244,7 +240,7 @@ def load_all_data():
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             else:
-                df[col] = None  # colonne vide
+                df[col] = None  # colonne vide pour éviter les erreurs
         
         st.success(f"Données chargées : {len(df):,} transactions.")
         return df
@@ -272,6 +268,8 @@ with st.sidebar.expander("Diagnostic"):
     st.write(f"Code recherché : {selected_insee_code}")
     st.write(f"Trouvé : {'OUI' if selected_insee_code in all_data['code_commune'].values else 'NON'}")
     st.write("Colonnes disponibles :", list(all_data.columns))
+    # Aperçu des 5 premières lignes
+    st.dataframe(all_data.head(5))
 
 # Filtrer par commune
 df = all_data[all_data['code_commune'] == selected_insee_code].copy()
