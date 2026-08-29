@@ -140,56 +140,91 @@ def load_all_data():
         return pd.DataFrame()
     
     try:
-        df = pd.read_csv(DATA_FILE, sep=',', low_memory=False)
+        # Lecture avec gestion des lignes mal formées
+        # On essaie d'abord avec on_bad_lines='skip' (pandas >= 1.3.0)
+        try:
+            df = pd.read_csv(
+                DATA_FILE,
+                sep=',',
+                low_memory=False,
+                on_bad_lines='skip',
+                encoding='utf-8',
+                quotechar='"'
+            )
+        except TypeError:
+            # Fallback pour pandas < 1.3.0
+            df = pd.read_csv(
+                DATA_FILE,
+                sep=',',
+                low_memory=False,
+                error_bad_lines=False,
+                warn_bad_lines=True,
+                encoding='utf-8',
+                quotechar='"'
+            )
+        except Exception:
+            # Si l'encodage UTF-8 échoue, on tente latin1
+            df = pd.read_csv(
+                DATA_FILE,
+                sep=',',
+                low_memory=False,
+                on_bad_lines='skip' if hasattr(pd, 'on_bad_lines') else 'skip',
+                encoding='latin1',
+                quotechar='"'
+            )
+        
         if df.empty:
+            st.warning("Le fichier est vide ou n'a pas pu être lu.")
             return pd.DataFrame()
         
-        # Convertir les dates
+        # --- Nettoyage ---
+        # Dates
         if "date_mutation" in df.columns:
             df["date_mutation"] = pd.to_datetime(df["date_mutation"], errors='coerce')
         
-        # Convertir les valeurs numériques
+        # Numériques
         for col in ["valeur_fonciere", "surface_reelle_bati"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Filtrer sur les types de biens (Maison / Appartement)
+        # Filtrage des types de biens
         if "type_local" in df.columns:
             df = df[df["type_local"].isin(['Maison', 'Appartement'])]
         elif "libtypbien" in df.columns:
             df = df[df["libtypbien"].str.contains("MAISON|APPARTEMENT", case=False, na=False)]
         
-        # Supprimer les lignes avec des NaN critiques
+        # Suppression des lignes avec valeurs manquantes critiques
         df = df.dropna(subset=["valeur_fonciere", "surface_reelle_bati", "date_mutation"])
         if df.empty:
+            st.warning("Aucune transaction valide après nettoyage.")
             return pd.DataFrame()
         
         # Prix au m²
         df['prix_m2'] = df['valeur_fonciere'] / df['surface_reelle_bati']
         df = df[(df['prix_m2'] > 200) & (df['prix_m2'] < 15000)]
         if df.empty:
+            st.warning("Aucune donnée dans les plages de prix au m².")
             return pd.DataFrame()
         
-        # Code commune : essayer plusieurs colonnes
+        # Code commune
         code_col = None
         for col in ["code_commune", "l_codinsee"]:
             if col in df.columns:
                 code_col = col
                 break
         if code_col is None:
-            st.error("Aucune colonne de code commune trouvée.")
+            st.error("Colonne de code commune introuvable.")
             return pd.DataFrame()
         df["code_commune"] = df[code_col].astype(str).str.zfill(5)
         
-        # Coordonnées (pour la carte)
-        if "latitude" not in df.columns and "longitude" not in df.columns:
-            # Si les colonnes n'existent pas, on les crée vides (pour éviter des erreurs)
-            df["latitude"] = None
-            df["longitude"] = None
-        else:
-            df["latitude"] = pd.to_numeric(df.get("latitude", None), errors='coerce')
-            df["longitude"] = pd.to_numeric(df.get("longitude", None), errors='coerce')
+        # Coordonnées
+        for col in ["latitude", "longitude"]:
+            if col not in df.columns:
+                df[col] = None
+            else:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
+        st.success(f"Données chargées : {len(df):,} transactions.")
         return df
     except Exception as e:
         st.error(f"Erreur lors du chargement : {e}")
@@ -198,7 +233,6 @@ def load_all_data():
 # ---------- UI ----------
 st.title("Dashboard Immobilier Gironde 2026")
 
-# Sidebar : choix de la commune
 st.sidebar.header("Commune")
 selected_commune_name = st.sidebar.selectbox("Choisissez :", sorted(NOMS_COMMUNES.keys()))
 selected_insee_code = NOMS_COMMUNES[selected_commune_name]
@@ -209,7 +243,6 @@ with st.spinner("Chargement des données..."):
     all_data = load_all_data()
 
 if all_data.empty:
-    st.warning("Aucune donnée disponible. Vérifiez le fichier.")
     st.stop()
 
 # Vérification de la présence de la commune
@@ -226,7 +259,7 @@ if df.empty:
 # Sidebar : filtres supplémentaires
 st.sidebar.header("Filtres")
 
-# Code postal (si disponible)
+# Code postal
 if "code_postal" in df.columns and not df["code_postal"].isna().all():
     cp_disp = sorted(df['code_postal'].astype(str).unique())
     cp_sel = st.sidebar.multiselect("Code postal", cp_disp, default=cp_disp)
@@ -246,7 +279,7 @@ prix_max = st.sidebar.number_input("Prix max (€)",
                                    int(df['valeur_fonciere'].max()) if not df.empty else 1000000, 
                                    step=10000)
 
-# Date range (optionnel)
+# Période
 if "date_mutation" in df_filtre.columns:
     min_date = df_filtre["date_mutation"].min().date()
     max_date = df_filtre["date_mutation"].max().date()
@@ -308,7 +341,6 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     ]
     
     if not map_data.empty:
-        # Sample pour performance
         sample_size = min(2000, len(map_data))
         if sample_size > 0:
             map_sample = map_data.sample(n=sample_size, random_state=42)
